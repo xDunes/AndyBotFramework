@@ -64,7 +64,7 @@ A Python-based automation framework for Android games with GUI interface, featur
 
 ```bash
 git clone <repository-url>
-cd Apex-Girl
+cd AndyBotFramework
 ```
 
 ### 2. Install Python Dependencies
