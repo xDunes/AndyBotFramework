@@ -1,0 +1,35 @@
+{
+  "default_device": "Device1",
+  "devices": {
+    "Device1": {
+      "email": "user1@example.com",
+      "window": "Bot1",
+      "serial": "00ce49b2",
+      "concerttarget": -1,
+      "stadiumtarget": 2
+    },
+    "Device2": {
+      "email": "user2@example.com",
+      "window": "Bot2",
+      "serial": "1a2b3c4d",
+      "concerttarget": -1,
+      "stadiumtarget": 2
+    },
+    "Device3": {
+      "email": "user3@example.com",
+      "window": "Bot3",
+      "serial": "abcd1234",
+      "concerttarget": -1,
+      "stadiumtarget": 2
+    }
+  },
+  "adb": {
+    "host": "127.0.0.1",
+    "port": 5037
+  },
+  "screenshot": {
+    "default_format": "png",
+    "default_output": "tempScreenShot.png",
+    "open_in_paint": false
+  }
+}
