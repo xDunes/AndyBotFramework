@@ -185,25 +185,77 @@ def extract_ratio_from_image(bot, image, fallback_used=0, fallback_of=1):
 
 
 def get_active_cars(bot):
-    """Get the count of active cars (used/total)"""
+    """Get the count of active cars (used/total)
+
+    Returns:
+        dict: {'used': int, 'of': int} or error codes:
+              - {'used': -2, 'of': 3} if no cars sent
+              - {'used': 0, 'of': 2} if OCR fails (empty text)
+              - {'used': 0, 'of': 1} if pattern match fails
+    """
     bot.find_and_click('x')
     sc = bot.screenshot()
-    crop = sc[350:370, 1:35]
+    crop = sc[354:371, 1:35]
 
     if not bot.find_and_click('nocarssent', screenshot=crop, tap=False):
         return {"used": -2, "of": 3}
 
     sc = bot.screenshot()
-    crop = sc[280:295, 30:70]
-    text = pytesseract.image_to_string(bot.prepare_image_for_ocr(crop),
-                                       config='--psm 7 -c tessedit_char_whitelist="0123456789/')
-    bot.log(f'Rally OCR: {text}')
+    crop = sc[354:371, 35:70]
+
+    # Show the cropped region for debugging
+    #cv.imshow("Rally OCR - Cropped Region", crop)
+    #cv.waitKey(0)
+    #cv.destroyAllWindows()
+
+    # Isolate WHITE TEXT: Convert all non-white pixels to black
+    # Define white threshold (adjust tolerance as needed)
+    white_threshold = 200  # Pixels with values >= 200 are considered "white-ish"
+
+    # Convert to grayscale first
+    gray = cv.cvtColor(crop, cv.COLOR_BGR2GRAY)
+
+    # Create binary mask: white pixels stay white (255), everything else becomes black (0)
+    _, white_mask = cv.threshold(gray, white_threshold, 255, cv.THRESH_BINARY)
+
+    # Show the white-isolated image
+    #cv.imshow("Rally OCR - White Isolated", white_mask)
+    #cv.waitKey(0)
+    #cv.destroyAllWindows()
+
+    # Now prepare for OCR: resize, clean up, and invert
+    # Resize for better OCR
+    resized = cv.resize(white_mask, None, fx=6, fy=6, interpolation=cv.INTER_CUBIC)
+
+    # Apply morphological operations to clean up noise
+    kernel = np.ones((2, 2), np.uint8)
+    cleaned = cv.morphologyEx(resized, cv.MORPH_OPEN, kernel, iterations=1)
+    cleaned = cv.morphologyEx(cleaned, cv.MORPH_CLOSE, kernel, iterations=1)
+
+    # Invert so text is BLACK on WHITE background (Tesseract preference)
+    processed = cv.bitwise_not(cleaned)
+
+    # Show the final processed image for debugging
+    #cv.imshow("Rally OCR - Final Processed", processed)
+    #cv.waitKey(0)
+    #cv.destroyAllWindows()
+
+    # Try OCR with PSM 7 (single line) and restricted character set
+    text = pytesseract.image_to_string(
+        processed,
+        config='--psm 7 -c tessedit_char_whitelist=0123456789/'
+    )
+
+    # Clean up whitespace
+    text = text.strip()
+    #bot.log(f'Rally OCR: "{text}"')
 
     if text == "":
         return {"used": 0, "of": 2}
 
     result = NUMBER_SLASH_PATTERN.search(text)
     if not result:
+        bot.log(f'Rally OCR pattern match failed for: "{text}"')
         return {"used": 0, "of": 1}
 
     return {
@@ -313,6 +365,12 @@ def do_concert(bot, user):
         - Maximum 9 iterations to prevent infinite loops
         - Uses random delays for human-like behavior
     """
+    if not bot.find_and_click("screen-map",accuracy=0.99, tap=False) and not bot.find_and_click("screen-main", accuracy=0.99, tap=False):
+        return
+    
+    bot.find_and_click("screen-main")
+    time.sleep(1)
+    
     counter = 0
 
     while True:
@@ -323,9 +381,12 @@ def do_concert(bot, user):
 
         if result["used"] < result["of"]:
             # Send a car to concert
-            # First check if we're out of energy - exit if so
+            # First check if we're out of energy - uncheck concert and return
             if bot.find_and_click('outofenergy', tap=False, accuracy=0.99):
-                sys.exit()
+                log("Out of energy - stopping concert runs")
+                if hasattr(bot, 'gui') and bot.gui:
+                    bot.gui.function_states['doConcert'].set(False)
+                return
 
             # Check if we have cars available to send
             sc = bot.screenshot()
@@ -411,11 +472,14 @@ def do_rally(bot, user):
         - Maximum 5 retry attempts for joining
         - Uses random delays for human-like behavior
     """
+
+    if not bot.find_and_click('rallyavailable',tap=False):
+        return
     # Check car availability
     result = get_active_cars(bot)
 
-    while result["used"] == -1:
-        result = get_active_cars(bot)
+    #while result["used"] == -1:
+    #    result = get_active_cars(bot)
 
     log(f'Rally Cars: {result["used"]}/{result["of"]}')
 
@@ -424,35 +488,29 @@ def do_rally(bot, user):
         return
 
     # Join rally
-    counter = 0
-
     if bot.find_and_click('rallyavailable'):
-        while not bot.find_and_click('rallyjoin'):
-            time.sleep(1)
-
-            if not bot.find_and_click('rallyback', tap=False):
-                break
-
-            while bot.find_and_click('rallyjoin'):
-                counter += 1
-                time.sleep(1)
-                if counter > 5:
-                    break
-
-            if counter > 5:
+        counter=0
+        while not bot.find_and_click('rallyjoin') and counter<=20:
+            counter+=1
+            time.sleep(0.5)
+            if counter>20:
                 bot.find_and_click('rallyback')
-                break
+                return
 
-            time.sleep(2)
-
-            # Drive to rally location
-            pause = random.randint(1, 100) / 100
+        offset_x = random.randint(1, 30)
+        offset_y = random.randint(1, 35)
+        counter2=0
+        while not bot.find_and_click("driveto", accuracy=0.92, offset_x=offset_x, offset_y=offset_y):
+            counter2+=1
+            bot.find_and_click('rallyjoin')
+            time.sleep(0.1)
             offset_x = random.randint(1, 30)
             offset_y = random.randint(1, 35)
+            if counter2>30:
+                bot.find_and_click('rallyback')
+                return
 
-            while bot.find_and_click("driveto", tap=True, accuracy=0.99, click_delay=1, offset_x=offset_x, offset_y=offset_y):
-                time.sleep(pause)
-                pause = random.randint(1, 100) / 100
+
 
 
 def get_alert_rally_info(bot):
@@ -566,6 +624,66 @@ def do_studio(bot, user, stop):
 # GAME ACTION FUNCTIONS - GROUP ACTIVITIES
 # ============================================================================
 
+def assist_one_fan(bot):
+    """Assist one group building by selecting and driving a character
+
+    This function handles the process of:
+    1. Finding the min/max slider settings
+    2. Configuring character selection settings
+    3. Selecting a random SSR character
+    4. Driving to the building location
+
+    Args:
+        bot: BOT instance for game interactions
+
+    Note:
+        - Uses random offsets for human-like clicking
+        - Maximum 10 retries for finding settings
+    """
+    counter = 0
+    while not bot.find_and_click("min") and counter <= 5 and not bot.find_and_click("max", tap=False):
+        counter += 1
+        time.sleep(1)
+
+    counter = 0
+    while not bot.find_and_click("settings") and counter <= 10:
+        counter += 1
+        time.sleep(0.1)
+
+    while bot.find_and_click("settings") or bot.find_and_click("brokensettings", offset_y=5):
+        time.sleep(0.1)
+
+    time.sleep(2)
+
+    offset_x = random.randint(1, 15)
+    offset_y = random.randint(1, 10)
+
+    while bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y):
+        time.sleep(0.1)
+        offset_x = random.randint(1, 15)
+        offset_y = random.randint(1, 10)
+    time.sleep(1)
+    bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y)
+    time.sleep(1)
+    bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y)
+
+    bot.swipe(270, 630, 270, -700)
+
+    time.sleep(3)
+    bot.find_and_click("randomssr")
+
+    time.sleep(0.5)
+    counter = 0
+    while not bot.find_and_click("settingsdriveto"):
+        counter += 1
+        if counter >= 10:
+            return
+        time.sleep(0.1)
+    
+    time.sleep(2)
+    bot.find_and_click("continuemarch")
+
+
 def do_group(bot, user):
     """Perform group-related activities (gifts, investments, zone)
 
@@ -594,9 +712,8 @@ def do_group(bot, user):
     if not bot.find_and_click("screen-map",accuracy=0.99, tap=False) and not bot.find_and_click("screen-main", accuracy=0.99, tap=False):
         return
 
-    bot.find_and_click("help", accuracy=0.99)
-    while not bot.find_and_click("group", accuracy=0.99):
-        time.sleep(0.1)
+    while bot.find_and_click("group", accuracy=0.99) or bot.find_and_click("help", accuracy=0.99):
+        time.sleep(0.2)
 
     while not bot.find_and_click("gift") and bot.find_and_click("group", accuracy=0.99):
         time.sleep(0.1)
@@ -630,12 +747,13 @@ def do_group(bot, user):
     time.sleep(1)
 
     while bot.find_and_click("invest", accuracy=0.99):
-        time.sleep(0.1)
+        time.sleep(0.2)
 
     # Zone activities
     while not bot.find_and_click("zone"):
         time.sleep(0.1)
         bot.tap(250, 865)
+        bot.find_and_click("rallyback")
 
     offset_x = random.randint(1, 5)
     offset_y = random.randint(1, 5)
@@ -649,9 +767,11 @@ def do_group(bot, user):
     counter=0
     offset_x = random.randint(1, 30)
     offset_y = random.randint(1, 35)
-    while not bot.find_and_click("assist", accuracy=0.92, offset_x=offset_x, offset_y=offset_y) and counter<=7:
-        if bot.find_and_click("nobuildings", accuracy=0.95):
-            counter=7
+    buildings_found = True
+    while not bot.find_and_click("assist", accuracy=0.92, offset_x=offset_x, offset_y=offset_y) and counter<=10:
+        if bot.find_and_click("groupzonenormal", accuracy=0.95, tap=False):
+            counter=10
+            buildings_found = False
         counter+=1
         time.sleep(0.1)
         bot.swipe(270, 490, 400, 490)
@@ -660,43 +780,7 @@ def do_group(bot, user):
     if counter<=6:
         bot.find_and_click("assist")
         time.sleep(2)
-
-        counter=0
-        while not bot.find_and_click("min") and counter<=5 and not bot.find_and_click("max",tap=False):
-            counter+=1
-            time.sleep(1)
-
-        counter=0
-        while not bot.find_and_click("settings") and counter<=10:
-            counter+=1
-            time.sleep(0.1)
-
-        while bot.find_and_click("settings") or bot.find_and_click("brokensettings",offset_y=5):
-            time.sleep(0.1)
-
-        time.sleep(2)
-
-        offset_x = random.randint(1, 30)
-        offset_y = random.randint(1, 35)
-
-        while bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y):
-            time.sleep(0.1)
-            offset_x = random.randint(1, 30)
-            offset_y = random.randint(1, 35)
-
-
-        bot.swipe(270, 630, 270, -700)
-
-        time.sleep(3)
-        bot.find_and_click("randomssr")
-
-        time.sleep(0.5)
-        counter=0
-        while not bot.find_and_click("settingsdriveto"):
-            counter+=1
-            if counter>=10:
-                return
-            time.sleep(0.1)
+        assist_one_fan(bot)
     else:
         offset_x = random.randint(1, 30)
         offset_y = random.randint(1, 35)
@@ -706,10 +790,12 @@ def do_group(bot, user):
             offset_x = random.randint(1, 30)
             offset_y = random.randint(1, 35)
 
-    # Start cooldown timer at the end of successful execution
-    global gui_instance
-    if gui_instance:
-        gui_instance.last_run_times['doGroup'] = time.time()
+    # Start cooldown timer only if no buildings were found (buildings_found is False)
+    # This means we successfully assisted buildings
+    if not buildings_found:
+        global gui_instance
+        if gui_instance:
+            gui_instance.last_run_times['doGroup'] = time.time()
 
 
 
@@ -719,9 +805,84 @@ def do_group(bot, user):
 # ============================================================================
 
 def do_street(bot, user):
-    """Navigate to street screen - placeholder"""
-    _ = bot, user  # Unused - placeholder function
-    log("doStreet executed - not yet implemented")
+    """Perform street-related activities (XP collection and demo completion)
+
+    Navigates to the street screen and performs available actions:
+    1. Claims offline income if popup appears
+    2. Navigates to Tokyo 2 street location
+    3. Collects street XP if ready
+    4. Completes available demo tasks with assistant
+    5. Returns to main screen
+
+    Args:
+        bot: BOT instance for game interactions
+        user: Username for configuration lookups (currently unused)
+
+    Note:
+        - Auto-unchecks itself in GUI when complete
+        - Exits early if street button not found
+    """
+    _ = user  # Unused parameter
+
+    if not bot.find_and_click("street"):
+        log("Street button not found - skipping street tasks")
+        return
+    time.sleep(1)
+
+    # Wait for street screen to load (with timeout protection)
+    counter = 0
+    while not bot.find_and_click("streetback",tap=False) and not bot.find_and_click("offlineincomeclaim"):
+        time.sleep(0.1)
+        counter += 1
+        if counter > 100:  # 10 second timeout
+            log("Street screen load timeout - aborting")
+            return
+
+    counter = 0
+    while not bot.find_and_click("streetback",tap=False):
+        time.sleep(0.1)
+        counter += 1
+        if counter > 100:  # 10 second timeout
+            log("Street back button not found - aborting")
+            return
+
+    bot.find_and_click("tokyo2street",accuracy=0.99)
+    time.sleep(2)
+
+    if bot.find_and_click("streetxpready",accuracy=0.99):
+        while not bot.find_and_click("streetxpreadyselected",accuracy=0.99):
+            time.sleep(0.1)
+            bot.find_and_click("streetback",tap=False)
+
+        time.sleep(1)
+        bot.find_and_click("collectxp")
+        time.sleep(1)
+        bot.find_and_click("tokyo2street")
+        time.sleep(2)
+
+    if bot.find_and_click("demoassistant",accuracy=0.99):
+
+        time.sleep(1)
+        if bot.find_and_click("demosready",accuracy=0.99):
+
+            time.sleep(2)
+            while bot.find_and_click("democomplete"):
+                time.sleep(0.2)
+                while not bot.find_and_click("tapscreentocontinue"):
+                    time.sleep(0.1)
+                while bot.find_and_click("tapscreentocontinue"):
+                    time.sleep(0.1)
+                time.sleep(0.5)
+
+            while bot.find_and_click("back"):
+                time.sleep(0.1)
+    
+    while bot.find_and_click("streetback"):
+        time.sleep(0.1)
+
+    # Auto-uncheck Street function in GUI
+    if hasattr(bot, 'gui') and bot.gui:
+        bot.gui.function_states['doStreet'].set(False)
 
 
 def do_artists(bot, user):
@@ -897,6 +1058,11 @@ class BotGUI:
         # Track last run times for cooldown system
         self.last_run_times = {}
 
+        # Shortcut triggers (for immediate execution on next bot loop)
+        self.shortcut_triggers = {
+            'assist_one_fan': False
+        }
+
         self.create_widgets()
 
     def create_widgets(self):
@@ -920,8 +1086,12 @@ class BotGUI:
         top_content_frame = ttk.Frame(self.root)
         top_content_frame.pack(fill="x", padx=3, pady=1)
 
-        # Left side - Functions (4 columns)
-        self._create_functions_section(top_content_frame)
+        # Left side - Functions
+        left_column = ttk.Frame(top_content_frame)
+        left_column.pack(side="left", fill="both", expand=True)
+
+        self._create_functions_section(left_column)
+        self._create_shortcuts_section(left_column)
 
         # Right side - Settings and controls
         self._create_controls_section(top_content_frame)
@@ -932,7 +1102,7 @@ class BotGUI:
     def _create_functions_section(self, parent):
         """Create the functions checkboxes section"""
         functions_frame = ttk.LabelFrame(parent, text="Functions", padding=1)
-        functions_frame.pack(side="left", fill="both", expand=True, padx=1)
+        functions_frame.pack(fill="x", padx=1)
 
         # Define custom row layout
         # Row 1: Street, Artists, Studio, Tour, Group
@@ -1010,6 +1180,24 @@ class BotGUI:
         self.screenshot_button = ttk.Button(button_frame, text="Screenshot",
                                             command=self.toggle_screenshot)
         self.screenshot_button.pack(fill="x", pady=1)
+
+    def _create_shortcuts_section(self, parent):
+        """Create the shortcuts section under Functions"""
+        shortcuts_frame = ttk.LabelFrame(parent, text="Shortcuts", padding=2)
+        shortcuts_frame.pack(fill="x", padx=1, pady=(2, 0))
+
+        # Create a row of shortcut buttons
+        button_row = ttk.Frame(shortcuts_frame)
+        button_row.pack(fill="x")
+
+        # 1 fan button
+        fan_button = ttk.Button(button_row, text="1 fan", command=self.trigger_assist_one_fan)
+        fan_button.pack(side="left", padx=2, pady=1)
+
+    def trigger_assist_one_fan(self):
+        """Trigger assist_one_fan to run on next bot loop cycle"""
+        self.shortcut_triggers['assist_one_fan'] = True
+        self.log("1 fan shortcut triggered - will execute on next bot loop")
 
     def _create_log_section(self):
         """Create the log window section"""
@@ -1290,6 +1478,20 @@ def run_bot_loop(gui):
 
     while gui.is_running and bot_running:
         try:
+            # Check for shortcut triggers (run immediately, highest priority)
+            if gui.shortcut_triggers['assist_one_fan']:
+                gui.shortcut_triggers['assist_one_fan'] = False
+                gui.update_status("Running", "assist_one_fan (shortcut)")
+                try:
+                    assist_one_fan(bot)
+                    time.sleep(2)
+                    bot.find_and_click("continuemarch")
+                except BotStoppedException:
+                    gui.log("Stopped during assist_one_fan shortcut")
+                    raise
+                except Exception as e:
+                    gui.log(f"ERROR in assist_one_fan shortcut: {e}")
+
             # Get settings
             try:
                 sleep_time = float(gui.sleep_time.get())

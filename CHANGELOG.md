@@ -118,8 +118,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2025-01-24
+
+### Added
+- **Shortcuts section in GUI** - New section between Functions and Log for quick action buttons
+- **"1 fan" shortcut button** - Immediately triggers assist_one_fan function on next bot loop cycle
+- **Shortcut trigger system** - Infrastructure for immediate execution of shortcut actions with highest priority
+
+### Changed
+- **Code refactoring** - Extracted assist_one_fan function from do_group (lines 726-760)
+- **GUI layout optimization** - Shortcuts section positioned under Functions, left of Settings/buttons
+- **do_street improvements**:
+  - Added comprehensive documentation with full docstring
+  - Added timeout protection to prevent infinite loops (10-second timeouts)
+  - Added logging for early returns and error conditions
+  - Marked unused parameters for clarity
+  - Auto-unchecks Street function in GUI when complete
+
+### Fixed
+- **GUI spacing** - Functions area made more compact to accommodate Shortcuts without changing window size
+- **Log area preserved** - Maintained original log area size by taking space from Functions section
+
+### Technical Details
+- **assist_one_fan function** (ApexGirlBot.py:627-677) - Handles selecting and driving a character to assist one group building
+- **Shortcut execution** (ApexGirlBot.py:1402-1414) - Runs at start of bot loop with highest priority
+- **do_street documentation** (ApexGirlBot.py:807-823) - Full docstring with workflow explanation
+
+---
+
 ## Version History
 
+- **0.1.1** - Code refactoring, Shortcuts system, do_street improvements
 - **0.1.0** - Initial release with core framework and ApexGirl bot
 
 ---

@@ -1,6 +1,6 @@
-# Andy Bot Framework
+# Apex-Girl Bot Framework
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.6%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -64,7 +64,7 @@ A Python-based automation framework for Android games with GUI interface, featur
 
 ```bash
 git clone <repository-url>
-cd AndyBotFramework
+cd Apex-Girl
 ```
 
 ### 2. Install Python Dependencies
@@ -199,11 +199,13 @@ Create a `config.json` file in the project root:
   "devices": {
     "Device1": {
       "serial": "00ce49b2",
+      "window": "LDPlayer",
       "concerttarget": -1,
       "stadiumtarget": 2
     },
     "Device2": {
       "serial": "01af38d4",
+      "window": "LDPlayer-1",
       "concerttarget": -1,
       "stadiumtarget": 2
     }
@@ -221,6 +223,7 @@ Create a `config.json` file in the project root:
 
 **Configuration Fields:**
 - `serial`: Hardware serial number (8 hex chars, found using methods above)
+- `window`: Window title for ArrangeWindows.py (exact title of emulator window)
 - `concerttarget`: Game-specific setting (use -1 for default)
 - `stadiumtarget`: Game-specific setting
 
@@ -291,7 +294,7 @@ Capture screenshots from Android devices via ADB for creating image templates ("
 **Purpose:**
 - Capture game screens for template creation
 - Find exact pixel coordinates for click actions
-- Create image needles for `findAndClick()` operations
+- Create image needles for `find_and_click()` operations
 
 **Basic Usage:**
 ```bash
@@ -301,16 +304,13 @@ python getScreenShot.py Device1 -p
 # Save to specific file
 python getScreenShot.py Device1 -o screenshots/my_game.png
 
-# Capture specific region
-python getScreenShot.py Device1 -r 100,100,500,500 -p
-
 # Verbose mode
 python getScreenShot.py Device1 -v -p
 ```
 
 **Command-Line Options:**
 ```
-usage: getScreenShot.py [-h] [-s SERIAL] [-c CONFIG] [-o OUTPUT] [-r REGION]
+usage: getScreenShot.py [-h] [-s SERIAL] [-c CONFIG] [-o OUTPUT]
                         [-f {png,jpg,bmp}] [-v] [-q] [-p]
                         [user]
 
@@ -322,7 +322,6 @@ Optional arguments:
   -s SERIAL             Device serial number (overrides user lookup)
   -c CONFIG             Path to configuration file
   -o OUTPUT             Output file path (default: tempScreenShot.png)
-  -r REGION             Capture region as "x1,y1,x2,y2"
   -f {png,jpg,bmp}      Output image format
   -v, --verbose         Enable verbose logging
   -q, --quiet           Suppress all output except errors
@@ -346,7 +345,7 @@ Optional arguments:
    - Open the screenshot in MS Paint
    - Hover your mouse over the desired location
    - Look at the bottom-left corner for pixel coordinates (e.g., "150, 230")
-   - Use these coordinates in `clickCoords(x, y)` or `touch(x, y)`
+   - Use these coordinates in `bot.tap(x, y)` or `andy.touch(x, y)`
 
 4. **Use in your bot:**
    ```python
@@ -362,9 +361,6 @@ Optional arguments:
 ```bash
 # Capture and save to dated folder
 python getScreenShot.py Device1 -o "screenshots/$(date +%Y%m%d)/screen.png" -p
-
-# Capture region and open immediately
-python getScreenShot.py Device1 -r 0,0,540,100 -p
 
 # Quiet mode with specific format
 python getScreenShot.py Device1 -o needle.jpg -f jpg -q
@@ -392,6 +388,7 @@ python getScreenShot.py -s 00ce49b2 -o output.png -p
   "devices": {
     "DeviceName": {
       "serial": "00ce49b2",
+      "window": "LDPlayer",
       "concerttarget": -1,
       "stadiumtarget": 2
     }
@@ -439,6 +436,8 @@ The script will automatically run `adb shell getprop ro.boot.serialno` and displ
    - **Function Checkboxes:** Enable/disable specific bot actions
      - Street, Artists, Studio, Tour, Group
      - Concert, Help, Coin, Heal, spamHQ, Rally
+   - **Shortcuts:** Quick action buttons for immediate execution
+     - **1 fan:** Send one character to assist a group building (executes on next bot loop)
    - **Settings:**
      - Sleep: Delay between action cycles (seconds)
      - Seconds: Screenshot capture interval (0 = single capture)
@@ -459,7 +458,8 @@ The script will automatically run `adb shell getprop ro.boot.serialno` and displ
 - **Auto-positioning:** Windows arrange based on device order in config.json
 - **Status indicators:** Live status and current action display
 - **Function toggle:** Enable/disable individual bot functions
-- **Smart auto-uncheck:** Studio unchecks when target reached
+- **Smart auto-uncheck:** Studio and Street uncheck when tasks complete
+- **Shortcuts system:** Quick action buttons for immediate execution (e.g., "1 fan" for single group assist)
 - **Persistent logging:** Scroll through 300 most recent log entries
 
 ---

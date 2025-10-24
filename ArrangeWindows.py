@@ -61,9 +61,10 @@ try:
     newMonitor=sys.argv[1]
     if not newMonitor is None:
         monitor=newMonitor
-except Exception as error:
-    print("NO ARGUMENT")
+except IndexError:
+    print("NO ARGUMENT - using default monitor 4")
 
+monitor_found = False
 for m in get_monitors():
     print(m)
     #if m.is_primary:
@@ -71,11 +72,31 @@ for m in get_monitors():
         monitorWidth=m.width
         xStart=m.x
         yStart=m.y
+        monitor_found = True
+        break
+
+if not monitor_found:
+    print(f"Error: Monitor DISPLAY{monitor} not found")
+    sys.exit(1)
+
+if monitorWidth == 0:
+    print(f"Error: Invalid monitor width (0) for DISPLAY{monitor}")
+    sys.exit(1)
 
 # Load window titles from config.json
-with open('config.json', 'r') as config_file:
-    config = json.load(config_file)
-    windowsTitles = [device['window'] for device in config['devices'].values()]
+try:
+    with open('config.json', 'r') as config_file:
+        config = json.load(config_file)
+        windowsTitles = [device['window'] for device in config['devices'].values()]
+except FileNotFoundError:
+    print("Error: config.json file not found")
+    sys.exit(1)
+except json.JSONDecodeError:
+    print("Error: config.json is not valid JSON")
+    sys.exit(1)
+except KeyError as e:
+    print(f"Error: Missing expected key in config.json: {e}")
+    sys.exit(1)
 
 print(windowsTitles)
 
@@ -97,6 +118,10 @@ for windowTitle in windowsTitles:
     except IndexError:
         print(f"Didn't find {windowTitle}")
 
+if len(windows) == 0:
+    print("Error: No windows found to arrange. Please check window titles in config.json")
+    sys.exit(1)
+
 width=int(monitorWidth/len(windows))
 #height=int(width*1.6875)
 #height=int(width*2.16666666) 540x1170
@@ -104,8 +129,12 @@ height=int(width*1.8)   #540x960
 
 counter=0
 for window in windows:
-    window.resizeTo(width,height)
-    window.moveTo(xStart+(width*counter),yStart)
-    # Bring window to front after positioning
-    force_window_to_front(window)
-    counter=counter+1
+    try:
+        window.resizeTo(width,height)
+        window.moveTo(xStart+(width*counter),yStart)
+        # Bring window to front after positioning
+        force_window_to_front(window)
+        counter=counter+1
+    except Exception as e:
+        print(f"Error positioning window '{window.title}': {e}")
+        counter=counter+1  # Still increment counter to maintain spacing for remaining windows

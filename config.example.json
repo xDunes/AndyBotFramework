@@ -3,22 +3,44 @@
   "devices": {
     "Device1": {
       "email": "user1@example.com",
-      "window": "Bot1",
-      "serial": "00ce49b2",
+      "window": "Device1",
+      "serial": "emulator-5554",
       "concerttarget": -1,
       "stadiumtarget": 2
+
     },
     "Device2": {
       "email": "user2@example.com",
-      "window": "Bot2",
-      "serial": "1a2b3c4d",
+      "window": "Device2",
+      "serial": "emulator-5556",
       "concerttarget": -1,
       "stadiumtarget": 2
     },
     "Device3": {
       "email": "user3@example.com",
-      "window": "Bot3",
-      "serial": "abcd1234",
+      "window": "Device3",
+      "serial": "emulator-5558",
+      "concerttarget": -1,
+      "stadiumtarget": 2
+    },
+    "Device4": {
+      "email": "user4@example.com",
+      "window": "Device4",
+      "serial": "emulator-5560",
+      "concerttarget": -1,
+      "stadiumtarget": 2
+    },
+    "Device5": {
+      "email": "user5@example.com",
+      "window": "Device5",
+      "serial": "emulator-5562",
+      "concerttarget": -1,
+      "stadiumtarget": 2
+    },
+    "Device6": {
+      "email": "user6@example.com",
+      "window": "Device6",
+      "serial": "emulator-5564",
       "concerttarget": -1,
       "stadiumtarget": 2
     }

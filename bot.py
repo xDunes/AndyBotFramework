@@ -7,6 +7,7 @@ OCR support, and gesture control. Abstracts android.py for easier bot developmen
 
 from android import Android
 import cv2 as cv
+import numpy as np
 import os
 import os.path
 
@@ -318,15 +319,20 @@ class BOT:
         # Returns in RGB order (converts from BGR/BGRA)
         return (screenshot[y][x][2], screenshot[y][x][1], screenshot[y][x][0])
 
-    def prepare_image_for_ocr(self, image, gaussian=True):
+    def prepare_image_for_ocr(self, image, gaussian=True, adaptive=False, morph=True, scale=5, invert=True):
         """Prepare image for OCR text recognition
 
         Preprocesses image with resizing, optional blur, grayscale conversion,
-        thresholding, and color inversion to optimize for OCR accuracy.
+        thresholding, morphological operations, and color inversion to optimize
+        for OCR accuracy.
 
         Args:
             image: Input image (BGR/BGRA format)
             gaussian: Apply Gaussian blur to reduce noise (default: True)
+            adaptive: Use adaptive thresholding instead of binary (default: False)
+            morph: Apply morphological operations to clean up text (default: True)
+            scale: Resize multiplier for better OCR (default: 5)
+            invert: Invert colors - use True for dark text on light bg, False for white text on dark bg (default: True)
 
         Returns:
             numpy.ndarray: Processed black and white image optimized for OCR
@@ -334,11 +340,18 @@ class BOT:
         Example:
             sc = bot.screenshot()
             cropped = sc[100:200, 50:250]  # Crop region
+
+            # For dark text on light background:
             processed = bot.prepare_image_for_ocr(cropped)
-            text = pytesseract.image_to_string(processed)
+
+            # For white text on dark background:
+            processed = bot.prepare_image_for_ocr(cropped, invert=False)
+
+            # For difficult text, use adaptive thresholding:
+            processed = bot.prepare_image_for_ocr(cropped, adaptive=True)
         """
-        # Resize image 5x for better OCR accuracy
-        image = cv.resize(image, None, fx=5, fy=5, interpolation=cv.INTER_CUBIC)
+        # Resize image for better OCR accuracy
+        image = cv.resize(image, None, fx=scale, fy=scale, interpolation=cv.INTER_CUBIC)
 
         # Apply Gaussian blur to reduce noise
         if gaussian:
@@ -347,10 +360,30 @@ class BOT:
         # Convert to grayscale
         gray_image = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
 
-        # Apply binary threshold
-        _, bw_image = cv.threshold(gray_image, 127, 255, cv.THRESH_BINARY)
+        # Apply thresholding
+        if adaptive:
+            # Adaptive thresholding works better for varying lighting conditions
+            bw_image = cv.adaptiveThreshold(
+                gray_image, 255,
+                cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv.THRESH_BINARY,
+                11, 2
+            )
+        else:
+            # Simple binary threshold with Otsu's method for automatic threshold value
+            _, bw_image = cv.threshold(gray_image, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
 
-        # Invert colors for better OCR
-        bw_image = cv.bitwise_not(bw_image)
+        # Apply morphological operations to clean up the image
+        if morph:
+            # Remove small noise with opening (erosion followed by dilation)
+            kernel = np.ones((2, 2), np.uint8)
+            bw_image = cv.morphologyEx(bw_image, cv.MORPH_OPEN, kernel, iterations=1)
+
+            # Close small gaps in text with closing (dilation followed by erosion)
+            bw_image = cv.morphologyEx(bw_image, cv.MORPH_CLOSE, kernel, iterations=1)
+
+        # Invert colors if needed (Tesseract works best with black text on white background)
+        if invert:
+            bw_image = cv.bitwise_not(bw_image)
 
         return bw_image
