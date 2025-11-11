@@ -5,6 +5,8 @@ Provides core bot functionality including:
 - Configuration loading from config.json
 - GUI with logging, start/stop, and screenshot
 - Bot execution loop with cooldown system
+- Debug mode with SQLite logging and screenshot storage
+- LogViewer integration for reviewing debug logs
 - Example do_helloworld function
 
 Usage:
@@ -26,6 +28,8 @@ from tkinter import ttk
 import threading
 import cv2 as cv
 from datetime import datetime
+from log_database import LogDatabase
+import subprocess
 
 # ============================================================================
 # GLOBAL STATE
@@ -44,18 +48,20 @@ _cached_config = None
 # LOGGING HELPER
 # ============================================================================
 
-def log(message):
+def log(message, screenshot=None):
     """Log message to GUI if available, otherwise print to console
 
     Args:
         message: Message string to log
+        screenshot: Optional screenshot image to associate with log entry
 
     Note:
         Uses global gui_instance if available, falls back to console print
+        If Debug mode is on and screenshot provided, saves to database
     """
     global gui_instance
     if gui_instance:
-        gui_instance.log(message)
+        gui_instance.log(message, screenshot=screenshot)
     else:
         print(message)
 
@@ -207,7 +213,7 @@ class BotGUI:
         # Settings
         self.sleep_time = tk.StringVar(value="1")
         self.screenshot_interval = tk.StringVar(value="0")
-        self.show_no_click = tk.BooleanVar(value=False)
+        self.debug = tk.BooleanVar(value=False)
 
         # Bot state
         self.is_running = False
@@ -228,7 +234,44 @@ class BotGUI:
         # Track last run times for cooldown system
         self.last_run_times = {}
 
+        # Debug logging setup
+        self.log_db = None
+        self.detailed_log_buffer = []  # Stores (timestamp, message, entry_id) tuples
+        if self.debug.get():
+            self.log_db = LogDatabase(self.username)
+
         self.create_widgets()
+
+        # Enable debug callback to initialize database when checkbox is toggled
+        self.debug.trace_add('write', self._on_debug_toggle)
+
+    def _on_debug_toggle(self, *_):
+        """Handle debug checkbox toggle - initialize/close database"""
+        if self.debug.get():
+            # Debug enabled - create database connection
+            if self.log_db is None:
+                self.log_db = LogDatabase(self.username)
+                self.log("Debug mode enabled - logging to database")
+        else:
+            # Debug disabled - close database connection
+            if self.log_db is not None:
+                self.log_db.close()
+                self.log_db = None
+                self.log("Debug mode disabled")
+
+    def _get_timestamp(self, with_milliseconds=False):
+        """Get formatted timestamp
+
+        Args:
+            with_milliseconds: If True, includes .SSS milliseconds
+
+        Returns:
+            str: Formatted timestamp
+        """
+        now = datetime.now()
+        if with_milliseconds:
+            return now.strftime("%H:%M:%S.%f")[:-3]  # Keep only 3 digits of microseconds
+        return now.strftime("%H:%M:%S")
 
     def create_widgets(self):
         """Create all GUI widgets
@@ -332,11 +375,11 @@ class BotGUI:
         ttk.Label(screenshot_frame, text="Seconds:", font=("Arial", 7)).pack(anchor="w")
         ttk.Entry(screenshot_frame, textvariable=self.screenshot_interval, width=8).pack(fill="x")
 
-        # Show NO CLICK logs checkbox
-        no_click_frame = ttk.Frame(settings_frame)
-        no_click_frame.pack(fill="x", pady=1)
-        ttk.Checkbutton(no_click_frame, text="Show NO CLICK",
-                       variable=self.show_no_click).pack(anchor="w")
+        # Debug checkbox
+        debug_frame = ttk.Frame(settings_frame)
+        debug_frame.pack(fill="x", pady=1)
+        ttk.Checkbutton(debug_frame, text="Debug",
+                       variable=self.debug).pack(anchor="w")
 
         # Control buttons
         button_frame = ttk.Frame(right_frame)
@@ -349,6 +392,11 @@ class BotGUI:
         self.screenshot_button = ttk.Button(button_frame, text="Screenshot",
                                             command=self.toggle_screenshot)
         self.screenshot_button.pack(fill="x", pady=1)
+
+        # Show Full Log button
+        self.show_log_button = ttk.Button(button_frame, text="Show Full Log",
+                                          command=self.show_full_log)
+        self.show_log_button.pack(fill="x", pady=1)
 
     def _create_log_section(self):
         """Create the log window section"""
@@ -392,20 +440,37 @@ class BotGUI:
         except:
             pass
 
-    def log(self, message):
+    def log(self, message, screenshot=None):
         """Add message to log window with 300 line buffer
 
         Args:
             message: Message string to log
+            screenshot: Optional screenshot numpy array to save (if Debug mode on)
 
         Note:
             - Adds timestamp to each message
             - Maintains 300 line buffer (FIFO)
             - Auto-scrolls only if user hasn't manually scrolled up
+            - In Debug mode: saves to database with milliseconds and screenshots
         """
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        # Determine if debug mode is on
+        debug_mode = self.debug.get()
+
+        # Get appropriate timestamp
+        timestamp = self._get_timestamp(with_milliseconds=debug_mode)
         log_msg = f"[{timestamp}] {message}"
 
+        # Save to database if debug mode is on
+        entry_id = None
+        if debug_mode and self.log_db:
+            entry_id = self.log_db.add_log_entry(message, screenshot)
+
+        # Add to detailed log buffer for debug viewer (stores entry_id instead of path)
+        self.detailed_log_buffer.append((timestamp, message, entry_id))
+        if len(self.detailed_log_buffer) > self.max_log_lines:
+            self.detailed_log_buffer = self.detailed_log_buffer[-self.max_log_lines:]
+
+        # Add to GUI log buffer
         self.log_buffer.append(log_msg)
 
         # Keep only last 300 lines (FIFO buffer)
@@ -575,6 +640,28 @@ class BotGUI:
             self.log(f"Error saving screenshot: {e}")
             return None
 
+    def show_full_log(self):
+        """Launch LogViewer.py to browse the debug log database"""
+        if not self.debug.get():
+            self.log("Debug mode must be enabled to view full logs")
+            return
+
+        try:
+            # Launch LogViewer.py with this device's name
+            script_dir = os.path.dirname(__file__)
+            log_viewer_path = os.path.join(script_dir, "LogViewer.py")
+
+            if not os.path.exists(log_viewer_path):
+                self.log("ERROR: LogViewer.py not found")
+                return
+
+            # Launch LogViewer in a new process
+            subprocess.Popen([sys.executable, log_viewer_path])
+            self.log(f"Launched LogViewer for device: {self.username}")
+
+        except Exception as e:
+            self.log(f"Error launching LogViewer: {e}")
+
 
 # ============================================================================
 # BOT EXECUTION LOOP
@@ -628,6 +715,9 @@ def run_bot_loop(gui):
     # Track last run time for each function (store in GUI instance)
     gui.last_run_times = {func_name: 0 for func_name in function_map.keys()}
 
+    # Import keyboard library once at start
+    import keyboard
+
     while gui.is_running and bot_running:
         try:
             # Get settings
@@ -638,6 +728,13 @@ def run_bot_loop(gui):
 
             # Execute enabled functions
             for func_name, func in function_map.items():
+                # Check if Control key is held down before each function
+                if keyboard.is_pressed('ctrl'):
+                    # Show which function we're about to skip
+                    if gui.function_states[func_name].get():
+                        gui.update_status("Running", f"CTRL held - skipping {func_name}")
+                    break  # Exit the for loop to skip remaining functions
+
                 # Update cooldown display for this function (if it has a cooldown)
                 cooldown = function_cooldowns.get(func_name, 0)
                 if cooldown > 0 and func_name in gui.cooldown_labels:
@@ -681,8 +778,15 @@ def run_bot_loop(gui):
 
             # Sleep if configured
             if sleep_time > 0:
-                gui.update_status("Running", f"Sleeping {sleep_time}s")
+                # Check if Control is held during sleep
+                if keyboard.is_pressed('ctrl'):
+                    gui.update_status("Running", "CTRL held - override active")
+                else:
+                    gui.update_status("Running", f"Sleeping {sleep_time}s")
                 time.sleep(sleep_time)
+
+            # Note: Keyboard shortcuts disabled when GUI is present
+            # Use the Stop button to stop the bot instead
 
         except BotStoppedException:
             # User clicked stop button - exit gracefully

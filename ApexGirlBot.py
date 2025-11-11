@@ -19,6 +19,7 @@ import re
 import numpy as np
 from PIL import Image
 from datetime import datetime
+from log_database import LogDatabase
 
 # ============================================================================
 # GLOBAL STATE
@@ -43,18 +44,20 @@ NUMBER_SLASH_PATTERN = re.compile(r'(?P<used>\d+)[^\d]+(?P<of>\d+)')
 # LOGGING HELPER
 # ============================================================================
 
-def log(message):
+def log(message, screenshot=None):
     """Log message to GUI if available, otherwise print to console
 
     Args:
         message: Message string to log
+        screenshot: Optional screenshot image to associate with log entry
 
     Note:
         Uses global gui_instance if available, falls back to console print
+        If Debug mode is on and screenshot provided, saves to disk
     """
     global gui_instance
     if gui_instance:
-        gui_instance.log(message)
+        gui_instance.log(message, screenshot=screenshot)
     else:
         print(message)
 
@@ -365,7 +368,13 @@ def do_concert(bot, user):
         - Maximum 9 iterations to prevent infinite loops
         - Uses random delays for human-like behavior
     """
+    # Debug logging
+    if bot.gui and hasattr(bot.gui, 'debug') and bot.gui.debug.get():
+        log(f"DEBUG: do_concert() started for user {user}")
+
     if not bot.find_and_click("screen-map",accuracy=0.99, tap=False) and not bot.find_and_click("screen-main", accuracy=0.99, tap=False):
+        if bot.gui and hasattr(bot.gui, 'debug') and bot.gui.debug.get():
+            log("DEBUG: do_concert() - not on map or main screen, exiting")
         return
     
     bot.find_and_click("screen-main")
@@ -473,7 +482,7 @@ def do_rally(bot, user):
         - Uses random delays for human-like behavior
     """
 
-    if not bot.find_and_click('rallyavailable',tap=False):
+    if not bot.find_and_click('rallyavailable',tap=False) and not bot.find_and_click('dangerrally',tap=False):
         return
     # Check car availability
     result = get_active_cars(bot)
@@ -488,7 +497,7 @@ def do_rally(bot, user):
         return
 
     # Join rally
-    if bot.find_and_click('rallyavailable'):
+    if bot.find_and_click('rallyavailable') or bot.find_and_click('dangerrally'):
         counter=0
         while not bot.find_and_click('rallyjoin') and counter<=20:
             counter+=1
@@ -624,178 +633,523 @@ def do_studio(bot, user, stop):
 # GAME ACTION FUNCTIONS - GROUP ACTIVITIES
 # ============================================================================
 
-def assist_one_fan(bot):
+def assist(bot, use_min_fans=True):
     """Assist one group building by selecting and driving a character
 
     This function handles the process of:
-    1. Finding the min/max slider settings
+    1. Finding and clicking the min/max slider settings
     2. Configuring character selection settings
     3. Selecting a random SSR character
     4. Driving to the building location
 
     Args:
         bot: BOT instance for game interactions
+        use_min_fans: If True, clicks 'min' button; if False, clicks 'max' button (default: True)
 
     Note:
         - Uses random offsets for human-like clicking
         - Maximum 10 retries for finding settings
+        - Logs which fan level is being used (min/max)
     """
-    counter = 0
-    while not bot.find_and_click("min") and counter <= 5 and not bot.find_and_click("max", tap=False):
-        counter += 1
-        time.sleep(1)
+    # Log which mode we're using
+    fan_mode = "min" if use_min_fans else "max"
+    log(f"assist() started - using {fan_mode} fans")
 
+    # Smart fan selection: check which button is visible first
+    log(f"Checking current fan mode selection")
+
+    # Check if min button is visible
+    min_visible = bot.find_and_click("min", tap=False)
+    # Check if max button is visible
+    max_visible = bot.find_and_click("max", tap=False)
+
+    if use_min_fans:
+        # We want min fans
+        if min_visible:
+            # Min button visible means min is NOT selected, need to click it
+            log("Min button visible - clicking to select min fans")
+            if bot.find_and_click("min"):
+                log("'min' button clicked successfully")
+            else:
+                log("WARNING: Failed to click 'min' button")
+        elif max_visible:
+            # Max button visible means max IS selected, min is already selected - do nothing
+            log("Max button visible - min fans already selected, no action needed")
+        else:
+            # Neither visible - wait and retry
+            log("Neither min nor max button visible - waiting and retrying (max 5 attempts)")
+            counter = 0
+            while not bot.find_and_click("min") and counter <= 5:
+                counter += 1
+                time.sleep(1)
+            if counter > 5:
+                log("WARNING: 'min' button not found after 5 attempts")
+            else:
+                log(f"'min' button clicked successfully (attempt {counter})")
+    else:
+        # We want max fans
+        if max_visible:
+            # Max button visible means max is NOT selected, need to click it
+            log("Max button visible - clicking to select max fans")
+            if bot.find_and_click("max"):
+                log("'max' button clicked successfully")
+            else:
+                log("WARNING: Failed to click 'max' button")
+        elif min_visible:
+            # Min button visible means min IS selected, max is already selected - do nothing
+            log("Min button visible - max fans already selected, no action needed")
+        else:
+            # Neither visible - wait and retry
+            log("Neither min nor max button visible - waiting and retrying (max 5 attempts)")
+            counter = 0
+            while not bot.find_and_click("max") and counter <= 5:
+                counter += 1
+                time.sleep(1)
+            if counter > 5:
+                log("WARNING: 'max' button not found after 5 attempts")
+            else:
+                log(f"'max' button clicked successfully (attempt {counter})")
+
+    # Find and click settings button
+    log("Looking for 'settings' button (max 10 attempts)")
     counter = 0
     while not bot.find_and_click("settings") and counter <= 10:
         counter += 1
         time.sleep(0.1)
 
+    if counter > 10:
+        log("WARNING: 'settings' button not found after 10 attempts")
+    else:
+        log(f"'settings' button found (attempt {counter})")
+
+    # Keep clicking settings until it's gone (or brokensettings appears)
+    log("Clicking 'settings' until dialog opens")
     while bot.find_and_click("settings") or bot.find_and_click("brokensettings", offset_y=5):
         time.sleep(0.1)
 
     time.sleep(2)
+    log("Settings dialog opened - configuring character selection")
 
+    # Uncheck all checkboxes
     offset_x = random.randint(1, 15)
     offset_y = random.randint(1, 10)
 
+    log("Unchecking all character filters")
+    check_count = 0
     while bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y):
+        check_count += 1
         time.sleep(0.1)
         offset_x = random.randint(1, 15)
         offset_y = random.randint(1, 10)
+    log(f"Unchecked {check_count} character filters")
+
+    # Click twice more to ensure all are unchecked
     time.sleep(1)
     bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y)
     time.sleep(1)
     bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y)
 
+    # Swipe to reveal SSR characters
+    log("Swiping to reveal SSR characters")
     bot.swipe(270, 630, 270, -700)
 
     time.sleep(3)
-    bot.find_and_click("randomssr")
+    log("Selecting random SSR character")
+    if bot.find_and_click("randomssr"):
+        log("Random SSR character selected successfully")
+    else:
+        log("WARNING: 'randomssr' not found - selection may have failed")
 
+    # Find and click drive to button
     time.sleep(0.5)
+    log("Looking for 'settingsdriveto' button (max 10 attempts)")
     counter = 0
     while not bot.find_and_click("settingsdriveto"):
         counter += 1
         if counter >= 10:
+            log("ERROR: 'settingsdriveto' button not found after 10 attempts - returning early")
             return
         time.sleep(0.1)
-    
+    log(f"'settingsdriveto' button clicked (attempt {counter})")
+
     time.sleep(2)
-    bot.find_and_click("continuemarch")
+    log("Clicking 'continuemarch' to complete assist")
+    if bot.find_and_click("continuemarch"):
+        log("assist() completed successfully")
+    else:
+        log("WARNING: 'continuemarch' button not found - assist may not have completed properly")
 
 
-def do_group(bot, user):
-    """Perform group-related activities (gifts, investments, zone)
+def send_assist(bot, use_min_fans=True):
+    """Send assistance to group buildings with pre-processing steps
 
-    Comprehensive group activity automation including:
-    1. Navigating to group menu
-    2. Collecting and claiming gifts
-    3. Making investments in group plans
-    4. Participating in zone activities
-    5. Assisting group buildings
-    6. Selecting and driving characters to locations
+    This function handles the complete assist workflow:
+    1. Checks if already in settings window, assist screen, or join screen
+    2. If not, taps building location to open menu
+    3. Handles acceleration popup if present
+    4. Clicks assist and join buttons in sequence
+    5. Calls assist() function with appropriate fan parameter
 
     Args:
         bot: BOT instance for game interactions
-        user: Username for configuration lookups
+        use_min_fans: If True, uses minimum fans; if False, uses maximum fans (default: True)
+
+    Note:
+        - Performs pre-processing before calling assist()
+        - Logs each major step for debugging
+        - Handles acceleration popup automatically
+    """
+    fan_type = "minimum" if use_min_fans else "maximum"
+    log(f"send_assist started with {fan_type} fans")
+
+    # Check if we're already in the settings/assist/join screens
+    in_settings = bot.find_and_click("settingswindow", accuracy=0.99, tap=False)
+    in_assist = bot.find_and_click("sendassist", accuracy=0.99, tap=False)
+    in_join = bot.find_and_click("sendjoin", accuracy=0.99, tap=False)
+
+    if not (in_settings or in_assist or in_join):
+        log("Not in settings/assist/join screen - tapping building location")
+        bot.tap(270, 470)
+        time.sleep(1.5)
+
+        # Handle acceleration popup if it appears
+        if bot.find_and_click("sendaccelerate", accuracy=0.99, tap=True):
+            log("Acceleration popup found - clicked to proceed")
+            time.sleep(1)
+        else:
+            log("No acceleration popup detected")
+
+        # Click assist and join buttons in sequence
+        log("Looking for assist and join buttons")
+        clicked_assist = False
+        clicked_join = False
+        loop_counter = 0
+
+        while not (clicked_assist and clicked_join):
+            loop_counter += 1
+
+            # Safety check to prevent infinite loop
+            if loop_counter > 20:
+                log("WARNING: Exceeded max loops (20) waiting for assist/join buttons")
+                break
+
+            if not clicked_assist and bot.find_and_click("sendassist", accuracy=0.99,tap=False):
+                # Keep clicking until button disappears (indicating it was successfully clicked)
+                while bot.find_and_click("sendassist", accuracy=0.99):
+                    time.sleep(0.1)
+                clicked_assist = True
+                log("Successfully clicked 'assist' button")
+
+            if not clicked_join and bot.find_and_click("sendjoin", accuracy=0.99,tap=False):
+                # Keep clicking until button disappears
+                while bot.find_and_click("sendjoin", accuracy=0.99):
+                    time.sleep(1)
+                clicked_join = True
+                log("Successfully clicked 'join' button")
+
+            time.sleep(0.1)
+
+        if clicked_assist and clicked_join:
+            log("Pre-processing complete - both buttons clicked successfully")
+        else:
+            log(f"WARNING: Pre-processing incomplete - assist:{clicked_assist}, join:{clicked_join}")
+
+        time.sleep(2)
+    else:
+        log(f"Already in correct screen - settings:{in_settings}, assist:{in_assist}, join:{in_join}")
+
+    # Call the main assist function with the appropriate parameter
+    log(f"Calling assist() with use_min_fans={use_min_fans}")
+    assist(bot, use_min_fans=use_min_fans)
+
+    log(f"send_assist completed for {fan_type} fans")
+
+
+def do_recover(bot, user):
+    """Perform recovery and screen validation operations
+
+    This function is called at the end of each bot loop iteration to:
+    - Validate screen state (should be on map or main screen)
+    - Close any unwanted popups or dialogs
+    - Handle maintenance notifications
+    - Navigate back to correct screen if lost
+
+    Args:
+        bot: BOT instance for game interactions
+        user: Username for configuration lookups (currently unused)
+
+    Note:
+        - Called automatically at end of each bot loop (if enabled)
+        - Can be disabled via GUI checkbox
+        - Helps prevent bot from getting stuck in wrong screens
+        - Handles maintenance mode with 5-minute wait
+    """
+    _ = user  # Unused parameter
+
+    # Check if we're on the correct screen
+    on_map = bot.find_and_click("screen-map", accuracy=0.99, tap=False)
+    on_main = bot.find_and_click("screen-main", accuracy=0.99, tap=False)
+
+    if on_map or on_main:
+        # Already on correct screen, no recovery needed
+        if bot.find_and_click("fixmapassist", accuracy=0.99,tap=False):
+            bot.tap(250, 880)
+            log("Recovery: Clicked away from Assist")
+        return
+
+    # Not on correct screen - attempt recovery
+    log("Recovery: Not on map/main screen - attempting navigation fixes")
+
+    recovery_attempts = 0
+    max_attempts = 20  # Prevent infinite loop
+
+    while not (on_map or on_main) and recovery_attempts < max_attempts:
+        recovery_attempts += 1
+
+        # Try various close/back buttons
+        if bot.find_and_click("fixgroupgiftx", accuracy=0.99):
+            log("Recovery: Closed group gift screen")
+        if bot.find_and_click("fixgroupback", accuracy=0.99):
+            log("Recovery: Clicked group back button")
+        if bot.find_and_click("fixmainad"):
+            log("Recovery: Closed ad popup")
+        if bot.find_and_click("fixgrouprallyback", accuracy=0.99):
+            log("Recovery: Clicked rally back button")
+        if bot.find_and_click("fixgameclosed", accuracy=0.99):
+            log("Recovery: Clicked open game")
+        if bot.find_and_click("fixceocard",accuracy=0.99,tap=False):
+            bot.tap(250,880)
+            log("Recovery: Clicked away on CEO card")
+        if bot.find_and_click("fixgenericback",accuracy=0.91):
+            log("Recovery: Clicked Back")
+
+        
+
+        # Handle maintenance notification (wait 5 minutes if found)
+        if bot.find_and_click("fixmaintenanceconfirm", accuracy=0.99):
+            log("Recovery: Maintenance detected - waiting 5 minutes")
+            time.sleep(300)
+
+        time.sleep(0.1)
+
+        # Check screen state again
+        on_map = bot.find_and_click("screen-map", accuracy=0.99, tap=False)
+        on_main = bot.find_and_click("screen-main", accuracy=0.99, tap=False)
+
+    if on_map or on_main:
+        log(f"Recovery: Successfully returned to correct screen (attempts: {recovery_attempts})")
+    else:
+        log(f"WARNING: Recovery failed after {max_attempts} attempts - still not on map/main screen")
+
+
+def do_group(bot, user):
+    """Perform comprehensive group-related activities
+
+    Executes a complete workflow for group activities:
+    1. Navigation: Verifies correct screen and navigates to group menu
+    2. Gifts: Collects available gifts and claims rewards
+    3. Investments: Makes investments in group plans
+    4. Zone: Participates in zone activities and claims rewards
+    5. Assist: Finds and assists group buildings with characters
+
+    Args:
+        bot: BOT instance for game interactions
+        user: Username for configuration lookups (currently unused)
 
     Returns:
-        None - Exits early if required screens not found
+        None - Exits early if navigation fails or timeouts occur
 
     Note:
         - Starts cooldown timer only on successful completion
-        - Multiple early exit points if navigation fails
-        - Uses random offsets for human-like clicking
-        - Maximum 10 retries for finding settings
+        - Uses human-like random offsets for clicking
+        - Maximum retry limits on all wait loops to prevent hanging
+        - Comprehensive logging for debugging each phase
     """
-    # Verify we're on map or main screen before proceeding
-    if not bot.find_and_click("screen-map",accuracy=0.99, tap=False) and not bot.find_and_click("screen-main", accuracy=0.99, tap=False):
-        return
+    _ = user  # Unused parameter
+    log("do_group started")
 
+    # ========== PHASE 1: NAVIGATION ==========
+    log("Phase 1: Verifying screen state")
+    on_map = bot.find_and_click("screen-map", accuracy=0.99, tap=False)
+    on_main = bot.find_and_click("screen-main", accuracy=0.99, tap=False)
+
+    if not (on_map or on_main):
+        log("ERROR: Not on map or main screen - aborting do_group")
+        return
+    log(f"Screen verified - map:{on_map}, main:{on_main}")
+
+    # Navigate to group menu
+    log("Navigating to group menu")
     while bot.find_and_click("group", accuracy=0.99) or bot.find_and_click("help", accuracy=0.99):
         time.sleep(0.2)
 
+    # Wait for gift button to appear (indicates group menu loaded)
+    log("Waiting for group menu to load")
     while not bot.find_and_click("gift") and bot.find_and_click("group", accuracy=0.99):
-        time.sleep(0.1)
+        time.sleep(0.3)
 
+    # Wait for group screen to fully load
+    log("Waiting for group screen to fully load (max 10 attempts)")
+    counter = 0
+    while not bot.find_and_click("groupfullyloaded", tap=False):
+        counter += 1
+        time.sleep(0.2)
+        if counter > 10:
+            log("ERROR: Group screen failed to load after 10 attempts - aborting")
+            return
+    log(f"Group screen loaded successfully (attempt {counter})")
+
+    # ========== PHASE 2: GIFTS ==========
+    log("Phase 2: Processing gifts")
+
+    # Click gift button to open gift screen
     offset_x = random.randint(1, 5)
     offset_y = random.randint(1, 5)
-    while bot.find_and_click("gift", offset_x=offset_x, offset_y=offset_y,accuracy=0.98):
-        time.sleep(0.1)
+    gift_clicks = 0
+    while bot.find_and_click("gift", offset_x=offset_x, offset_y=offset_y, accuracy=0.98):
+        gift_clicks += 1
+        time.sleep(0.3)
+    log(f"Gift button clicked {gift_clicks} times")
 
-    while not bot.find_and_click("giftscreen",accuracy=0.99,tap=False) and bot.find_and_click("gift"):
-        time.sleep(0.1)
+    time.sleep(1)
 
-    # Collect gifts
+    # Ensure we're on gift screen
+    while not bot.find_and_click("giftscreen", accuracy=0.99, tap=False) and bot.find_and_click("gift"):
+        time.sleep(0.3)
+
+    # Collect and claim gifts
+    gifts_collected = False
     if bot.find_and_click("giftcollect"):
+        log("Collecting gifts")
         time.sleep(1)
-        bot.tap(250, 865)
+        bot.tap(250, 880)
         time.sleep(2)
+        gifts_collected = True
 
     if bot.find_and_click("claimall"):
-        time.sleep(0.5)
-        bot.tap(250, 865)
+        log("Claiming all rewards")
         time.sleep(1)
-        bot.tap(250, 865)
+        bot.tap(250, 880)
+        time.sleep(1)
+        bot.tap(250, 880)
         time.sleep(2)
+        gifts_collected = True
 
-    bot.tap(250, 865)
-    time.sleep(0.5)
+    if not gifts_collected:
+        log("No gifts to collect or claim")
 
-    # Investments
+    # Close gift screen
+    if bot.find_and_click("giftscreenx", accuracy=0.99):
+        log("Gift screen closed")
+
+    # ========== PHASE 3: INVESTMENTS ==========
+    log("Phase 3: Processing investments")
+
+    # Navigate back to group menu and wait for plan button
+    counter = 0
+    while not bot.find_and_click("plan", tap=False):
+        counter += 1
+        bot.tap(250, 880)
+        time.sleep(0.5)
+        if counter == 10:
+            log("ERROR: Plan button not found after 10 attempts - aborting")
+            return
+    log(f"Plan button found (attempt {counter})")
+
+    # Click plan and make investments
     bot.find_and_click("plan")
     time.sleep(1)
 
-    while bot.find_and_click("invest", accuracy=0.99):
+    invest_count = 0
+    while not bot.find_and_click("grouppaidinvest", accuracy=0.99, tap=False):
+        if bot.find_and_click("invest", accuracy=0.99):
+            invest_count += 1
         time.sleep(0.2)
+    log(f"Made {invest_count} investments")
 
-    # Zone activities
-    while not bot.find_and_click("zone"):
-        time.sleep(0.1)
-        bot.tap(250, 865)
+    # ========== PHASE 4: ZONE ACTIVITIES ==========
+    log("Phase 4: Processing zone activities")
+
+    # Navigate to zone
+    while not bot.find_and_click("zone", accuracy=0.99):
+        time.sleep(0.2)
+        bot.tap(250, 880)
         bot.find_and_click("rallyback")
 
+    # Click zone until screen opens
     offset_x = random.randint(1, 5)
     offset_y = random.randint(1, 5)
-    while bot.find_and_click("zone", offset_x=offset_x, offset_y=offset_y,accuracy=0.98):
+    zone_clicks = 0
+    while bot.find_and_click("zone", offset_x=offset_x, offset_y=offset_y, accuracy=0.98):
+        zone_clicks += 1
         time.sleep(0.5)
+    log(f"Zone button clicked {zone_clicks} times")
 
     time.sleep(1.5)
-    bot.find_and_click("groupclaim")
+
+    # Claim zone rewards
+    if bot.find_and_click("groupclaim"):
+        log("Zone rewards claimed")
+    else:
+        log("No zone rewards to claim")
+
     time.sleep(0.3)
 
-    counter=0
+    # ========== PHASE 5: ASSIST BUILDINGS ==========
+    log("Phase 5: Looking for buildings to assist")
+
+    counter = 0
     offset_x = random.randint(1, 30)
     offset_y = random.randint(1, 35)
     buildings_found = True
-    while not bot.find_and_click("assist", accuracy=0.92, offset_x=offset_x, offset_y=offset_y) and counter<=10:
+
+    # Search for assist button (with swipe to reveal more buildings)
+    while not bot.find_and_click("assist", accuracy=0.92, offset_x=offset_x, offset_y=offset_y) and counter <= 10:
+        # Check if zone is in normal state (no buildings to assist)
         if bot.find_and_click("groupzonenormal", accuracy=0.95, tap=False):
-            counter=10
+            log("Zone in normal state - no buildings need assistance")
+            counter = 10
             buildings_found = False
-        counter+=1
+        counter += 1
         time.sleep(0.1)
-        bot.swipe(270, 490, 400, 490)
+        bot.swipe(270, 490, 400, 490)  # Swipe to reveal more buildings
 
-
-    if counter<=6:
+    if buildings_found and counter <= 6:
+        log(f"Building found requiring assistance (search attempts: {counter})")
         bot.find_and_click("assist")
         time.sleep(2)
-        assist_one_fan(bot)
-    else:
+        assist(bot, use_min_fans=True)
+    elif buildings_found:
+        log(f"Building found but took too many attempts ({counter}) - backing out")
         offset_x = random.randint(1, 30)
         offset_y = random.randint(1, 35)
-
+        back_count = 0
         while bot.find_and_click("back", accuracy=0.92, offset_x=offset_x, offset_y=offset_y):
-            time.sleep(0.5)
+            back_count += 1
+            time.sleep(1)
             offset_x = random.randint(1, 30)
             offset_y = random.randint(1, 35)
+        log(f"Backed out of assist screen ({back_count} backs)")
+    else:
+        log("No buildings found requiring assistance")
+        back_count = 0  # Initialize back_count
+        while bot.find_and_click("back", accuracy=0.92, offset_x=offset_x, offset_y=offset_y):
+            back_count += 1
+            time.sleep(1)
+            offset_x = random.randint(1, 30)
+            offset_y = random.randint(1, 35)
+        if back_count > 0:
+            log(f"Backed out of zone screen ({back_count} backs)")
 
-    # Start cooldown timer only if no buildings were found (buildings_found is False)
-    # This means we successfully assisted buildings
+    # ========== COOLDOWN TIMER ==========
+    # Start cooldown timer only if no buildings were found (successfully completed all tasks)
     if not buildings_found:
+        log("do_group completed successfully - starting cooldown timer")
         global gui_instance
         if gui_instance:
             gui_instance.last_run_times['doGroup'] = time.time()
+    else:
+        log("do_group completed - cooldown NOT started (assisted building)")
 
 
 
@@ -827,7 +1181,7 @@ def do_street(bot, user):
     if not bot.find_and_click("street"):
         log("Street button not found - skipping street tasks")
         return
-    time.sleep(1)
+    time.sleep(2)
 
     # Wait for street screen to load (with timeout protection)
     counter = 0
@@ -856,6 +1210,10 @@ def do_street(bot, user):
 
         time.sleep(1)
         bot.find_and_click("collectxp")
+        time.sleep(2)
+        bot.tap(250, 880)
+        time.sleep(1)
+        bot.tap(250, 880)
         time.sleep(1)
         bot.find_and_click("tokyo2street")
         time.sleep(2)
@@ -1033,11 +1391,14 @@ class BotGUI:
             'doRally': tk.BooleanVar(value=False)
         }
 
+        # Special function states (moved to settings)
+        self.fix_enabled = tk.BooleanVar(value=True)  # Fix/Recover function - checked by default
+
         # Settings
         self.sleep_time = tk.StringVar(value="1")
         self.studio_stop = tk.StringVar(value="6")
         self.screenshot_interval = tk.StringVar(value="0")
-        self.show_no_click = tk.BooleanVar(value=False)
+        self.debug = tk.BooleanVar(value=False)
 
         # Bot state
         self.is_running = False
@@ -1049,6 +1410,7 @@ class BotGUI:
 
         # Log buffer
         self.log_buffer = []
+        self.detailed_log_buffer = []  # Stores (timestamp, message, screenshot_path) tuples
 
         # Cooldown display labels (for functions with cooldowns)
         self.cooldown_labels = {}
@@ -1060,10 +1422,61 @@ class BotGUI:
 
         # Shortcut triggers (for immediate execution on next bot loop)
         self.shortcut_triggers = {
-            'assist_one_fan': False
+            'assist_min_fans': False,
+            'assist_max_fans': False
         }
 
+        # Debug logging setup
+        self.log_db = None
+        if self.debug.get():
+            self.log_db = LogDatabase(self.username)
+
         self.create_widgets()
+
+        # Enable debug callback to initialize database when checkbox is toggled
+        self.debug.trace_add('write', self._on_debug_toggle)
+
+    def _on_debug_toggle(self, *_):
+        """Handle debug checkbox toggle - initialize/close database
+
+        This is called whenever the Debug checkbox state changes, regardless of
+        whether the bot is running or stopped. It immediately starts/stops
+        database logging.
+        """
+        if self.debug.get():
+            # Debug enabled - create database connection
+            if self.log_db is None:
+                try:
+                    self.log_db = LogDatabase(self.username)
+                    self.log("Debug mode enabled - logging to database")
+                except Exception as e:
+                    self.log(f"ERROR: Failed to enable debug mode: {e}")
+                    self.log_db = None
+        else:
+            # Debug disabled - close database connection
+            if self.log_db is not None:
+                try:
+                    self.log("Debug mode disabled - stopping database logging")
+                    self.log_db.close()
+                except Exception as e:
+                    # Log error but continue cleanup
+                    print(f"Error closing database: {e}")
+                finally:
+                    self.log_db = None
+
+    def _get_timestamp(self, with_milliseconds=False):
+        """Get formatted timestamp
+
+        Args:
+            with_milliseconds: If True, includes .SSS milliseconds
+
+        Returns:
+            str: Formatted timestamp
+        """
+        now = datetime.now()
+        if with_milliseconds:
+            return now.strftime("%H:%M:%S.%f")[:-3]  # Keep only 3 digits of microseconds
+        return now.strftime("%H:%M:%S")
 
     def create_widgets(self):
         """Create all GUI widgets"""
@@ -1151,35 +1564,47 @@ class BotGUI:
         settings_frame = ttk.LabelFrame(right_frame, text="Settings", padding=2)
         settings_frame.pack(fill="x", pady=1)
 
-        # Sleep time
+        # Bot loop sleep time - label and entry on same line with 's' suffix
         sleep_frame = ttk.Frame(settings_frame)
         sleep_frame.pack(fill="x", pady=1)
-        ttk.Label(sleep_frame, text="Sleep:", font=("Arial", 7)).pack(anchor="w")
-        ttk.Entry(sleep_frame, textvariable=self.sleep_time, width=8).pack(fill="x")
+        ttk.Label(sleep_frame, text="Bot loop:", font=("Arial", 7)).pack(side="left")
+        ttk.Entry(sleep_frame, textvariable=self.sleep_time, width=2).pack(side="left", padx=(2, 0))
+        ttk.Label(sleep_frame, text="s", font=("Arial", 7)).pack(side="left", padx=(1, 0))
 
-        # Screenshot interval
+        # Screenshot interval - label and entry on same line with 's' suffix
         screenshot_frame = ttk.Frame(settings_frame)
         screenshot_frame.pack(fill="x", pady=1)
-        ttk.Label(screenshot_frame, text="Seconds:", font=("Arial", 7)).pack(anchor="w")
-        ttk.Entry(screenshot_frame, textvariable=self.screenshot_interval, width=8).pack(fill="x")
+        ttk.Label(screenshot_frame, text="Screenshot:", font=("Arial", 7)).pack(side="left")
+        ttk.Entry(screenshot_frame, textvariable=self.screenshot_interval, width=2).pack(side="left", padx=(2, 0))
+        ttk.Label(screenshot_frame, text="s", font=("Arial", 7)).pack(side="left", padx=(1, 0))
 
-        # Show NO CLICK logs checkbox
-        no_click_frame = ttk.Frame(settings_frame)
-        no_click_frame.pack(fill="x", pady=1)
-        ttk.Checkbutton(no_click_frame, text="Show NO CLICK",
-                       variable=self.show_no_click).pack(anchor="w")
-
-        # Control buttons
-        button_frame = ttk.Frame(right_frame)
-        button_frame.pack(fill="x", pady=3)
-
-        self.toggle_button = ttk.Button(button_frame, text="Start", command=self.toggle_bot)
-        self.toggle_button.pack(fill="x", pady=1)
+        # Debug and Fix checkboxes on same line
+        debug_fix_frame = ttk.Frame(settings_frame)
+        debug_fix_frame.pack(fill="x", pady=1)
+        ttk.Checkbutton(debug_fix_frame, text="Debug",
+                       variable=self.debug).pack(side="left")
+        ttk.Checkbutton(debug_fix_frame, text="Fix",
+                       variable=self.fix_enabled).pack(side="left", padx=(10, 0))
 
         # Screenshot button
-        self.screenshot_button = ttk.Button(button_frame, text="Screenshot",
+        screenshot_button_frame = ttk.Frame(settings_frame)
+        screenshot_button_frame.pack(fill="x", pady=(4, 1))
+        self.screenshot_button = ttk.Button(screenshot_button_frame, text="Screenshot",
                                             command=self.toggle_screenshot)
-        self.screenshot_button.pack(fill="x", pady=1)
+        self.screenshot_button.pack(fill="x")
+
+        # Open Log Viewer button
+        open_log_button_frame = ttk.Frame(settings_frame)
+        open_log_button_frame.pack(fill="x", pady=(1, 1))
+        self.open_log_button = ttk.Button(open_log_button_frame, text="Open Log Viewer",
+                                          command=self.open_log_viewer)
+        self.open_log_button.pack(fill="x")
+
+        # Start/Stop button at bottom
+        button_frame = ttk.Frame(settings_frame)
+        button_frame.pack(fill="x", pady=(1, 2))
+        self.toggle_button = ttk.Button(button_frame, text="Start", command=self.toggle_bot)
+        self.toggle_button.pack(fill="x")
 
     def _create_shortcuts_section(self, parent):
         """Create the shortcuts section under Functions"""
@@ -1190,14 +1615,39 @@ class BotGUI:
         button_row = ttk.Frame(shortcuts_frame)
         button_row.pack(fill="x")
 
-        # 1 fan button
-        fan_button = ttk.Button(button_row, text="1 fan", command=self.trigger_assist_one_fan)
-        fan_button.pack(side="left", padx=2, pady=1)
+        # Min fans button
+        min_fan_button = ttk.Button(button_row, text="Min Fans", command=self.trigger_assist_min_fans)
+        min_fan_button.pack(side="left", padx=2, pady=1)
 
-    def trigger_assist_one_fan(self):
-        """Trigger assist_one_fan to run on next bot loop cycle"""
-        self.shortcut_triggers['assist_one_fan'] = True
-        self.log("1 fan shortcut triggered - will execute on next bot loop")
+        # Max fans button
+        max_fan_button = ttk.Button(button_row, text="Max Fans", command=self.trigger_assist_max_fans)
+        max_fan_button.pack(side="left", padx=2, pady=1)
+
+    def trigger_assist_min_fans(self):
+        """Trigger assist with minimum fans on next bot loop cycle
+
+        This is a shortcut button handler that sets a trigger flag to execute
+        send_assist(bot, use_min_fans=True) on the next bot loop iteration.
+
+        Note:
+            - Executes immediately on next bot loop (high priority)
+            - Logs the trigger event for tracking
+        """
+        self.shortcut_triggers['assist_min_fans'] = True
+        self.log("Min fans shortcut triggered - will execute on next bot loop")
+
+    def trigger_assist_max_fans(self):
+        """Trigger assist with maximum fans on next bot loop cycle
+
+        This is a shortcut button handler that sets a trigger flag to execute
+        send_assist(bot, use_min_fans=False) on the next bot loop iteration.
+
+        Note:
+            - Executes immediately on next bot loop (high priority)
+            - Logs the trigger event for tracking
+        """
+        self.shortcut_triggers['assist_max_fans'] = True
+        self.log("Max fans shortcut triggered - will execute on next bot loop")
 
     def _create_log_section(self):
         """Create the log window section"""
@@ -1234,20 +1684,37 @@ class BotGUI:
         except:
             pass
 
-    def log(self, message):
+    def log(self, message, screenshot=None):
         """Add message to log window with 300 line buffer
 
         Args:
             message: Message string to log
+            screenshot: Optional screenshot numpy array to save (if Debug mode on)
 
         Note:
             - Adds timestamp to each message
             - Maintains 300 line buffer (FIFO)
             - Auto-scrolls only if user hasn't manually scrolled up
+            - In Debug mode: saves to database with milliseconds and screenshots
         """
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        # Determine if debug mode is on
+        debug_mode = self.debug.get()
+
+        # Get appropriate timestamp
+        timestamp = self._get_timestamp(with_milliseconds=debug_mode)
         log_msg = f"[{timestamp}] {message}"
 
+        # Save to database if debug mode is on
+        entry_id = None
+        if debug_mode and self.log_db:
+            entry_id = self.log_db.add_log_entry(message, screenshot)
+
+        # Add to detailed log buffer for debug viewer (stores entry_id instead of path)
+        self.detailed_log_buffer.append((timestamp, message, entry_id))
+        if len(self.detailed_log_buffer) > self.max_log_lines:
+            self.detailed_log_buffer = self.detailed_log_buffer[-self.max_log_lines:]
+
+        # Add to GUI log buffer
         self.log_buffer.append(log_msg)
 
         # Keep only last 300 lines (FIFO buffer)
@@ -1323,6 +1790,29 @@ class BotGUI:
             self.screenshot_thread = threading.Thread(target=self.capture_screenshots, daemon=True)
             self.screenshot_thread.start()
             self.log("Screenshot capture started")
+
+    def open_log_viewer(self):
+        """Open LogViewer.py with current device and session selected"""
+        import subprocess
+        import sys
+
+        # Get the path to LogViewer.py
+        log_viewer_path = os.path.join(os.path.dirname(__file__), 'LogViewer.py')
+
+        # Launch LogViewer.py with device and session parameters
+        # Get current session from database
+        current_session = None
+        if self.log_db:
+            current_session = self.log_db.session_id
+
+        # Build command
+        cmd = [sys.executable, log_viewer_path, self.username]
+        if current_session:
+            cmd.append(str(current_session))
+
+        # Launch as separate process
+        subprocess.Popen(cmd)
+        self.log(f"Opening Log Viewer for {self.username}...")
 
     def capture_screenshots(self):
         """Capture screenshots in a separate thread
@@ -1476,21 +1966,37 @@ def run_bot_loop(gui):
     # Track last run time for each function (store in GUI instance)
     gui.last_run_times = {func_name: 0 for func_name in function_map.keys()}
 
+    # Import keyboard library once at start
+    import keyboard
+
     while gui.is_running and bot_running:
         try:
             # Check for shortcut triggers (run immediately, highest priority)
-            if gui.shortcut_triggers['assist_one_fan']:
-                gui.shortcut_triggers['assist_one_fan'] = False
-                gui.update_status("Running", "assist_one_fan (shortcut)")
+            if gui.shortcut_triggers['assist_min_fans']:
+                gui.shortcut_triggers['assist_min_fans'] = False
+                gui.update_status("Running", "send_assist - min fans (shortcut)")
                 try:
-                    assist_one_fan(bot)
+                    send_assist(bot, use_min_fans=True)
                     time.sleep(2)
                     bot.find_and_click("continuemarch")
                 except BotStoppedException:
-                    gui.log("Stopped during assist_one_fan shortcut")
+                    gui.log("Stopped during send_assist (min fans) shortcut")
                     raise
                 except Exception as e:
-                    gui.log(f"ERROR in assist_one_fan shortcut: {e}")
+                    gui.log(f"ERROR in send_assist (min fans) shortcut: {e}")
+
+            if gui.shortcut_triggers['assist_max_fans']:
+                gui.shortcut_triggers['assist_max_fans'] = False
+                gui.update_status("Running", "send_assist - max fans (shortcut)")
+                try:
+                    send_assist(bot, use_min_fans=False)
+                    time.sleep(2)
+                    bot.find_and_click("continuemarch")
+                except BotStoppedException:
+                    gui.log("Stopped during send_assist (max fans) shortcut")
+                    raise
+                except Exception as e:
+                    gui.log(f"ERROR in send_assist (max fans) shortcut: {e}")
 
             # Get settings
             try:
@@ -1505,6 +2011,13 @@ def run_bot_loop(gui):
 
             # Execute enabled functions
             for func_name, func in function_map.items():
+                # Check if Control key is held down before each function
+                if keyboard.is_pressed('ctrl'):
+                    # Show which function we're about to skip
+                    if gui.function_states[func_name].get():
+                        gui.update_status("Running", f"CTRL held - skipping {func_name}")
+                    break  # Exit the for loop to skip remaining functions
+
                 # Update cooldown display for this function (if it has a cooldown)
                 cooldown = function_cooldowns.get(func_name, 0)
                 if cooldown > 0 and func_name in gui.cooldown_labels:
@@ -1552,9 +2065,27 @@ def run_bot_loop(gui):
                         gui.log(f"Stopped during {func_name}")
                         raise
 
+            # Call recover function at end of each loop iteration (if Fix is enabled)
+            # Check if Control key is held down before Fix
+            if keyboard.is_pressed('ctrl'):
+                gui.update_status("Running", "CTRL held - skipping Fix")
+            elif gui.fix_enabled.get():
+                try:
+                    gui.update_status("Running", "Fix/Recover")
+                    do_recover(bot, user)
+                except BotStoppedException:
+                    gui.log("Stopped during Fix/Recover")
+                    raise
+                except Exception as e:
+                    gui.log(f"ERROR in Fix/Recover: {e}")
+
             # Sleep if configured
             if sleep_time > 0:
-                gui.update_status("Running", f"Sleeping {sleep_time}s")
+                # Check if Control is held during sleep
+                if keyboard.is_pressed('ctrl'):
+                    gui.update_status("Running", "CTRL held - override active")
+                else:
+                    gui.update_status("Running", f"Sleeping {sleep_time}s")
                 time.sleep(sleep_time)
 
             # Note: Keyboard shortcuts disabled when GUI is present
@@ -1565,6 +2096,11 @@ def run_bot_loop(gui):
             gui.log("Bot stopped by user")
             break
         except Exception as e:
+            # Check if bot is still supposed to be running before continuing
+            if not gui.is_running or not bot_running:
+                gui.log(f"ERROR during shutdown: {e}")
+                break
+
             gui.update_status("Error", str(e))
             gui.log(f"ERROR: {e}")
             time.sleep(1)
@@ -1596,7 +2132,10 @@ def main():
     gui_instance = gui
 
     gui.log(f"ApexGirl Bot started for user: {username}")
-    gui.log("Use checkboxes to enable functions, then click Start Bot")
+    gui.log("Auto-starting bot...")
+
+    # Auto-start the bot after GUI initializes
+    gui_root.after(100, gui.toggle_bot)
 
     gui_root.mainloop()
 

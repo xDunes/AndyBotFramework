@@ -1410,6 +1410,142 @@ row_layout = [
 
 ---
 
+### 6. Debug Logging with Database
+
+The bot template now includes advanced debug logging that saves all actions and screenshots to a SQLite database for later review.
+
+#### Enabling Debug Mode
+
+1. **Check the "Debug" checkbox** in the GUI Settings panel
+2. Bot will start logging to `logs/<username>.db`
+3. All log entries will include millisecond timestamps
+4. Screenshots are automatically saved with each action
+
+#### Using Debug Mode
+
+```python
+def do_collect_rewards(bot, user):
+    """Collect rewards with debug logging"""
+    _ = user
+
+    log("Starting reward collection")
+
+    # Take a screenshot and log it
+    sc = bot.screenshot()
+    log("Looking for reward button", screenshot=sc)
+
+    if bot.find_and_click('reward_button'):
+        sc2 = bot.screenshot()
+        log("Clicked reward button", screenshot=sc2)
+    else:
+        log("Reward button not found")
+```
+
+**What gets logged:**
+- ✅ All log messages with millisecond timestamps
+- ✅ Optional screenshots (pass `screenshot=` parameter)
+- ✅ Session start/end times
+- ✅ Database stored in `logs/<device_name>.db`
+
+#### Viewing Debug Logs
+
+**Method 1: Show Full Log button**
+1. Enable Debug mode
+2. Run your bot
+3. Click **"Show Full Log"** button
+4. LogViewer.py launches automatically
+
+**Method 2: Standalone LogViewer**
+```bash
+python LogViewer.py
+```
+
+**LogViewer Features:**
+- 📁 **Device List** (left panel) - Browse all logged devices
+- 📅 **Session List** (middle panel) - View all bot sessions by date/time
+- 📝 **Log Content** (right panel) - See logs with inline screenshots
+- 🖼️ **Lazy Loading** - Only loads images when visible (fast!)
+- 🔍 **Session Browsing** - Review past bot runs
+
+#### Debug Mode Best Practices
+
+**When to use Debug mode:**
+- ✅ Developing new functions
+- ✅ Troubleshooting failures
+- ✅ Verifying bot behavior
+- ✅ Creating documentation
+
+**When to disable Debug mode:**
+- ❌ Long production runs (uses disk space)
+- ❌ When not actively debugging
+- ❌ Multiple bots running (can slow down)
+
+**Managing Log Files:**
+```bash
+# View log database size
+ls -lh logs/
+
+# Delete old logs
+rm logs/Device1.db
+
+# Logs are organized per device:
+logs/
+  ├── Device1.db
+  ├── Device2.db
+  └── Device3.db
+```
+
+#### Example: Debug a Failing Function
+
+```python
+def do_claim_gift(bot, user):
+    """Claim gift with debug logging"""
+    _ = user
+
+    log("=== Starting Gift Claim ===")
+
+    # Capture initial state
+    sc = bot.screenshot()
+    log("Initial screen", screenshot=sc)
+
+    # Try to find gift icon
+    if not bot.find_and_click('gift_icon', tap=False):
+        sc_fail = bot.screenshot()
+        log("ERROR: Gift icon not found!", screenshot=sc_fail)
+        return
+
+    log("Found gift icon, clicking...")
+    bot.find_and_click('gift_icon')
+    time.sleep(2)
+
+    # Verify gift menu opened
+    sc_menu = bot.screenshot()
+    log("After click - checking menu", screenshot=sc_menu)
+
+    if bot.find_and_click('claim_button'):
+        sc_success = bot.screenshot()
+        log("✓ Gift claimed successfully", screenshot=sc_success)
+    else:
+        sc_error = bot.screenshot()
+        log("✗ Claim button not found", screenshot=sc_error)
+
+    log("=== Gift Claim Complete ===")
+```
+
+**Review in LogViewer:**
+1. Open LogViewer.py
+2. Select your device
+3. Select the session (by timestamp)
+4. Scroll through logs to see:
+   - Initial screen state
+   - Where the gift icon was (or wasn't) found
+   - What happened after each click
+   - Visual confirmation of success/failure
+
+This makes debugging 10x easier than guessing from text logs alone!
+
+---
+
 ## Troubleshooting
 
 ### Problem: "Bot can't find my needle"

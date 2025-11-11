@@ -111,10 +111,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] - 2025-11-11
+
+### Added
+- **Control key override** - Hold Ctrl key during bot loop to skip function execution
+  - Shows "CTRL held - skipping {function_name}" status during override
+  - Works during both function execution and sleep periods
+  - Allows manual intervention without stopping the bot
+  - Synced to botTemplate.py for consistency across all bots
+
+### Changed
+- **do_recover improvements** - Enhanced recovery function with additional fix cases
+  - Added fixceocard detection and handling ([ApexGirlBot.py:920-922](ApexGirlBot.py:920-922))
+  - Added fixgenericback for generic back button detection ([ApexGirlBot.py:923-924](ApexGirlBot.py:923-924))
+  - Added fixmapassist to click away from assist popup ([ApexGirlBot.py:895-897](ApexGirlBot.py:895-897))
+  - Improved navigation reliability when bot gets stuck
+- **Rally improvements** - Enhanced rally detection and joining
+  - Added dangerrally image detection for danger rallies ([ApexGirlBot.py:485](ApexGirlBot.py:485))
+  - Improved rally join reliability with better counter logic ([ApexGirlBot.py:501-520](ApexGirlBot.py:501-520))
+  - Added back button handling when rally join fails
+- **botTemplate.py updates** - Synced Control key override feature from ApexGirlBot
+  - Added keyboard library import ([botTemplate.py:718-719](botTemplate.py:718-719))
+  - Added Ctrl key detection before function execution ([botTemplate.py:731-736](botTemplate.py:731-736))
+  - Added Ctrl key override status during sleep ([botTemplate.py:781-786](botTemplate.py:781-786))
+
+### Technical Details
+- **Control Key Implementation** ([ApexGirlBot.py:2015-2090](ApexGirlBot.py:2015-2090))
+  - Uses `keyboard.is_pressed('ctrl')` to detect Ctrl key state
+  - Checks before each function and during sleep
+  - Displays override status in GUI
+  - Breaks out of function loop when Ctrl is held
+- **Rally Counter Logic** ([ApexGirlBot.py:501-520](ApexGirlBot.py:501-520))
+  - Maximum 20 attempts to find rally join button
+  - Maximum 30 attempts to find drive button after joining
+  - Auto-backs out if counters exceeded
+- **Recovery Function Enhancements** ([ApexGirlBot.py:868-943](ApexGirlBot.py:868-943))
+  - Maximum 20 recovery attempts to prevent infinite loops
+  - Handles maintenance mode with 5-minute wait
+  - Comprehensive popup and dialog closing
+
+---
+
 ## [Unreleased]
 
 ### Build Changes
 <!-- Automatically tracked changes go here. Will be summarized when MINOR version is bumped. -->
+
+---
+
+## [0.1.2] - 2025-01-27
+
+### Added
+- **LogViewer.py** - Standalone debug log viewer with three-column browser interface
+  - Device list navigation (left column)
+  - Session list with timestamps (middle column)
+  - Log content viewer with inline screenshot display (right column)
+  - Lazy image loading for performance optimization
+  - Scrollable interface with auto-load on viewport visibility
+- **log_database.py** - SQLite-based persistent logging system
+  - Per-device database organization in logs/ directory
+  - Session tracking with start/end timestamps
+  - Screenshot storage as PNG-encoded BLOBs
+  - Database statistics and management utilities
+  - Memory-efficient lazy loading for large log files
+- **Debug Mode** - Enhanced debugging capabilities in ApexGirlBot
+  - Optional database-backed logging with screenshots
+  - Screenshot annotations (red rectangles and crosshairs on found elements)
+  - Detailed action logging with visual confirmation
+  - Full log viewer button to launch LogViewer.py
+
+### Changed
+- **do_group improvements** - Enhanced group activity automation
+  - Better gift collection and claiming logic
+  - Improved investment selection
+  - More reliable zone participation
+  - Enhanced building assistance with character filtering
+  - Added far group building support logic
+- **Rally join enhancements** - More reliable auto-join for rallies
+  - Improved detection of rally availability
+  - Better car availability checking
+  - Enhanced error recovery
+- **Auto-connect on launch** - ApexGirlBot now automatically starts bot loop on launch
+  - Eliminates need to manually press Start button
+  - Faster workflow for multi-device management
+- **Git ignore updates** - Added logs/ directory and config.json to .gitignore
+  - Prevents accidental commit of sensitive configuration
+  - Keeps log databases local to each installation
+
+### Fixed
+- **do_group bug fixes** - Multiple stability improvements
+  - Fixed crashes in group assistance workflow
+  - Improved error handling for edge cases
+  - Better state management during complex operations
+
+### Technical Details
+- **LogViewer Architecture** (LogViewer.py:1-450+):
+  - Three-panel Tkinter interface with synchronized scrolling
+  - SQLite database reading from logs/*.db files
+  - PIL-based image rendering from BLOB data
+  - Lazy loading prevents memory overflow on large sessions
+- **log_database Module** (log_database.py:1-200+):
+  - Two-table schema: sessions and log_entries
+  - Millisecond timestamp precision (HH:MM:SS.sss format)
+  - PNG compression for screenshot storage
+  - Database size tracking and statistics
+- **Debug Integration** (ApexGirlBot.py):
+  - Debug mode checkbox in GUI
+  - Conditional screenshot capture on each action
+  - Database logger instantiation per session
+  - "Show Full Log" button launches LogViewer with current device
+- **botTemplate.py Updates**:
+  - Added LogDatabase import and initialization
+  - Debug mode checkbox in GUI Settings
+  - `log()` function now accepts optional screenshot parameter
+  - "Show Full Log" button launches LogViewer.py
+  - `_on_debug_toggle()` callback for database initialization
+  - `_get_timestamp()` with millisecond support
+  - `detailed_log_buffer` for storing entries with screenshots
+
+### Documentation
+- **NEWBOT.md** - Added comprehensive "Debug Logging with Database" section
+  - Enabling Debug mode instructions
+  - Using debug mode in bot functions
+  - Viewing logs with LogViewer
+  - Best practices and examples
+  - Managing log database files
 
 ---
 
@@ -148,8 +269,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
-- **0.1.1** - Code refactoring, Shortcuts system, do_street improvements
-- **0.1.0** - Initial release with core framework and ApexGirl bot
+- **0.1.3** - 2025-11-11 - Control key override, do_recover improvements, rally enhancements, botTemplate sync
+- **0.1.2** - 2025-01-27 - Debug logging system with LogViewer, do_group improvements, auto-connect on launch
+- **0.1.1** - 2025-01-24 - Code refactoring, Shortcuts system, do_street improvements
+- **0.1.0** - 2025-01-20 - Initial release with core framework and ApexGirl bot
 
 ---
 

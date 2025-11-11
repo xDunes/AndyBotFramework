@@ -163,5 +163,11 @@ tempScreenShot.png
 # Screenshot captures
 screenshots/
 
+# Debug logs and screenshots
+logs/
+
 # User configuration (contains device serials)
 config.json
+
+# Windows/Git Bash artifacts
+nul

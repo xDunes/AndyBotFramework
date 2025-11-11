@@ -1,6 +1,6 @@
 # Apex-Girl Bot Framework
 
-[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.6%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -35,7 +35,9 @@ A Python-based automation framework for Android games with GUI interface, featur
 - 📝 **OCR support** - Tesseract integration for reading in-game text
 - 🎨 **GUI interface** - Tkinter-based control panel with real-time logging
 - 🔧 **Utility tools** - Screenshot capture, window arrangement, and more
-- 📊 **Configurable logging** - Toggle verbose output and debug information
+- 📊 **Debug logging system** - SQLite-based persistent logging with screenshot storage
+- 🔍 **LogViewer** - Standalone debug log viewer with session browsing and inline image display
+- ⚡ **Auto-start capability** - Bots can auto-connect and start on launch
 
 ---
 
@@ -259,6 +261,8 @@ A barebones template script demonstrating how to create a bot for any game. Use 
 - Minimal bot structure
 - Example image matching
 - Basic click automation
+- Debug mode with SQLite logging
+- LogViewer integration
 - Template for adding game-specific functions
 
 **Usage:**
@@ -266,9 +270,47 @@ A barebones template script demonstrating how to create a bot for any game. Use 
 python botTemplate.py <username>
 ```
 
+**Debug Features:**
+- Enable Debug checkbox for persistent logging
+- All actions logged to `logs/<username>.db`
+- Screenshots saved with log entries
+- Launch LogViewer.py from GUI or standalone
+
 ---
 
 ## 🔧 Utility Scripts
+
+### **LogViewer.py**
+Standalone debug log viewer for analyzing bot execution sessions.
+
+**Purpose:**
+- Browse and review bot execution history
+- View logs with inline screenshot display
+- Analyze bot behavior for debugging and optimization
+- Navigate between devices and sessions easily
+
+**Features:**
+- **Three-column interface:**
+  - Left: Device list from logs/ directory
+  - Middle: Session list with timestamps
+  - Right: Log content with inline images
+- **Lazy image loading** - Only loads screenshots visible in viewport
+- **Session management** - Browse multiple execution sessions per device
+- **SQLite integration** - Reads from logs/*.db databases
+
+**Usage:**
+```bash
+# Launch the log viewer
+python LogViewer.py
+```
+
+Or click the **"Show Full Log"** button in ApexGirlBot GUI when Debug mode is enabled.
+
+**Workflow:**
+1. Enable Debug mode in ApexGirlBot
+2. Run the bot - logs are saved to `logs/<device_name>.db`
+3. Launch LogViewer.py to review sessions
+4. Select device → Select session → View logs with screenshots
 
 ### **ArrangeWindows.py**
 Automatically arranges multiple LDPlayer windows side-by-side on your screen.
@@ -442,9 +484,11 @@ The script will automatically run `adb shell getprop ro.boot.serialno` and displ
      - Sleep: Delay between action cycles (seconds)
      - Seconds: Screenshot capture interval (0 = single capture)
      - Show NO CLICK: Toggle logging of failed image matches
+     - Debug: Enable SQLite-based logging with screenshots
    - **Buttons:**
      - **Start/Stop:** Toggle button to control bot execution
      - **Screenshot:** Capture screenshots (single or continuous)
+     - **Show Full Log:** Launch LogViewer.py to browse debug logs (when Debug mode enabled)
 
 4. **Log Window:**
    - Real-time display of bot actions

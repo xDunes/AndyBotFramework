@@ -56,6 +56,8 @@ class BOT:
         self.needle = {}
         self.gui = None
         self.should_stop = False
+        self._template_cache = {}  # Cache for template matching results
+        self._cache_max_size = 50  # Limit cache size to prevent memory bloat
         self._load_all_needles()
 
     # ============================================================================
@@ -79,14 +81,15 @@ class BOT:
         """
         self.gui = gui_instance
 
-    def log(self, message):
+    def log(self, message, screenshot=None):
         """Log message to GUI if available, otherwise print to console
 
         Args:
             message: Message string to log
+            screenshot: Optional screenshot to associate with log entry (for debug mode)
         """
         if self.gui:
-            self.gui.log(message)
+            self.gui.log(message, screenshot=screenshot)
         else:
             print(message)
 
@@ -132,7 +135,8 @@ class BOT:
     # ============================================================================
 
     def find_and_click(self, needle_name, offset_x=0, offset_y=0, accuracy=0.9,
-                       tap=True, screenshot=None, click_delay=10, show_screenshot=False):
+                       tap=True, screenshot=None, click_delay=10, show_screenshot=False,
+                       search_region=None, use_cache=False):
         """Find needle image on screen and optionally tap it
 
         Uses OpenCV template matching to locate a needle image in the screenshot
@@ -146,6 +150,9 @@ class BOT:
             tap: Whether to tap if found (default: True)
             screenshot: Pre-captured screenshot, or None to capture new (default: None)
             click_delay: Touch delay parameter in ms (default: 10)
+            show_screenshot: Display screenshot for debugging (default: False)
+            search_region: Optional tuple (x, y, w, h) to limit search area for 2-4x speedup (default: None)
+            use_cache: Use cached template matching results for repeated searches (default: False)
 
         Returns:
             bool: True if needle found (and tapped if tap=True), False otherwise
@@ -158,6 +165,10 @@ class BOT:
             # Just check if image exists without tapping
             if bot.find_and_click('error_dialog', tap=False):
                 print("Error detected")
+
+            # Search only in top-right corner for faster matching
+            if bot.find_and_click('settings', search_region=(800, 0, 400, 200)):
+                print("Found settings button")
         """
         self.check_should_stop()
 
@@ -165,34 +176,81 @@ class BOT:
             screenshot = self.screenshot()
 
         if show_screenshot:
-            cv.imshow("test",screenshot)
+            cv.imshow("test", screenshot)
             cv.waitKey()
-            
-        # Match needle using OpenCV template matching
-        needle = self.get_needle(needle_name)
-        result = cv.matchTemplate(screenshot, needle, cv.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv.minMaxLoc(result)
 
+        # Cache debug mode check (avoid repeated hasattr calls)
+        debug_mode = self.gui and hasattr(self.gui, 'debug') and self.gui.debug.get()
+
+        # Handle ROI (Region of Interest) for faster searching
+        search_area = screenshot
+        roi_offset_x, roi_offset_y = 0, 0
+
+        if search_region:
+            x, y, w, h = search_region
+            search_area = screenshot[y:y+h, x:x+w]
+            roi_offset_x, roi_offset_y = x, y
+
+        # Get needle and check cache
+        needle = self.get_needle(needle_name)
+        needle_h, needle_w = needle.shape[:2]  # Get dimensions once
+
+        # Create cache key based on screenshot id and needle
+        cache_key = (needle_name, id(screenshot), search_region)
+
+        # Try to use cached result
+        if use_cache and cache_key in self._template_cache:
+            max_val, max_loc = self._template_cache[cache_key]
+        else:
+            # Match needle using OpenCV template matching
+            result = cv.matchTemplate(search_area, needle, cv.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv.minMaxLoc(result)
+
+            # Cache the result (with size limit to prevent memory bloat)
+            if use_cache:
+                if len(self._template_cache) >= self._cache_max_size:
+                    # Remove oldest entry (simple FIFO strategy)
+                    self._template_cache.pop(next(iter(self._template_cache)))
+                self._template_cache[cache_key] = (max_val, max_loc)
+
+        # Check if match found
         if max_val > accuracy:
             accuracy_percent = round(max_val * 100, 2)
 
+            # Calculate final tap position (adjust for ROI offset)
+            final_x = max_loc[0] + roi_offset_x + offset_x
+            final_y = max_loc[1] + roi_offset_y + offset_y
+
+            # Create annotated screenshot once if debug mode is on
+            annotated_screenshot = None
+            if debug_mode:
+                annotated_screenshot = screenshot.copy()
+                # Draw rectangle around found needle
+                top_left = (max_loc[0] + roi_offset_x, max_loc[1] + roi_offset_y)
+                bottom_right = (top_left[0] + needle_w, top_left[1] + needle_h)
+                cv.rectangle(annotated_screenshot, top_left, bottom_right, (0, 0, 255, 255), 3)
+
+                # Draw crosshair at tap position if tapping
+                if tap:
+                    self._draw_crosshair(annotated_screenshot, final_x, final_y, (0, 0, 255, 255), size=25, thickness=3)
+
+            # Log and perform action
             if tap:
-                final_x = max_loc[0] + offset_x
-                final_y = max_loc[1] + offset_y
-                self.log(f"TAP {needle_name} at ({final_x}, {final_y}) acc:{accuracy_percent}%")
+                log_msg = f"TAP {needle_name} at ({final_x}, {final_y}) acc:{accuracy_percent}%"
+                self.log(log_msg, screenshot=annotated_screenshot)
                 self.andy.touch(final_x, final_y, delay=click_delay, suppress_log=True)
             else:
-                self.log(f"FOUND {needle_name} acc:{accuracy_percent}%")
+                log_msg = f"FOUND {needle_name} acc:{accuracy_percent}%"
+                self.log(log_msg, screenshot=annotated_screenshot)
+
             return True
         else:
-            # Only log if NO TAP logging is enabled
-            if self.gui and hasattr(self.gui, 'show_no_click') and self.gui.show_no_click.get():
+            # Log NO TAP events when debug mode is enabled or no GUI (console mode)
+            if debug_mode or not self.gui:
                 accuracy_percent = round(max_val * 100, 2)
-                self.log(f"NO TAP {needle_name} acc:{accuracy_percent}%")
-            elif not self.gui:
-                # If no GUI, always log (console mode)
-                accuracy_percent = round(max_val * 100, 2)
-                self.log(f"NO TAP {needle_name} acc:{accuracy_percent}%")
+                log_msg = f"NO TAP {needle_name} acc:{accuracy_percent}%"
+                # In debug mode, include screenshot with the log
+                self.log(log_msg, screenshot=screenshot if debug_mode else None)
             return False
 
     def get_needle(self, needle_name):
@@ -209,6 +267,35 @@ class BOT:
         """
         return self.needle['findimg'][needle_name]
 
+    def clear_template_cache(self):
+        """Clear the template matching cache
+
+        Useful when switching between different game screens or activities
+        to prevent using stale cached results.
+
+        Example:
+            bot.clear_template_cache()  # Clear cache before new activity
+        """
+        self._template_cache.clear()
+
+    def _draw_crosshair(self, image, x, y, color, size=20, thickness=2):
+        """Draw a crosshair on the image at specified coordinates
+
+        Args:
+            image: Image to draw on (modified in place)
+            x: X coordinate
+            y: Y coordinate
+            color: BGRA color tuple (e.g., (0, 0, 255, 255) for red with alpha)
+            size: Length of crosshair arms in pixels (default: 20)
+            thickness: Line thickness (default: 2)
+        """
+        # Horizontal line
+        cv.line(image, (x - size, y), (x + size, y), color, thickness)
+        # Vertical line
+        cv.line(image, (x, y - size), (x, y + size), color, thickness)
+        # Circle at center
+        cv.circle(image, (x, y), 5, color, -1)
+
     # ============================================================================
     # SCREEN INTERACTION - Touch & Gestures
     # ============================================================================
@@ -224,6 +311,16 @@ class BOT:
             bot.tap(270, 480)  # Tap center of 540x960 screen
         """
         self.check_should_stop()
+
+        # Enhanced debug logging
+        debug_mode = self.gui and hasattr(self.gui, 'debug') and self.gui.debug.get()
+        if debug_mode:
+            screenshot = self.screenshot()
+            # Draw red crosshair at tap position
+            annotated_screenshot = screenshot.copy()
+            self._draw_crosshair(annotated_screenshot, x, y, (0, 0, 255, 255), size=25, thickness=3)  # Red crosshair with alpha
+            self.log(f"TAP COORDINATES at ({x}, {y})", screenshot=annotated_screenshot)
+
         self.andy.touch(x, y)
 
     def swipe(self, x1, y1, x2, y2, duration=500):
@@ -240,6 +337,20 @@ class BOT:
             bot.swipe(270, 800, 270, 200, duration=300)  # Swipe up
         """
         self.check_should_stop()
+
+        # Enhanced debug logging
+        debug_mode = self.gui and hasattr(self.gui, 'debug') and self.gui.debug.get()
+        if debug_mode:
+            screenshot = self.screenshot()
+            # Draw line from start to finish with arrow
+            annotated_screenshot = screenshot.copy()
+            # Draw arrow line from start to finish
+            cv.arrowedLine(annotated_screenshot, (x1, y1), (x2, y2), (0, 0, 255, 255), 4, tipLength=0.05)  # Red arrow with alpha
+            # Draw circles at start and end
+            cv.circle(annotated_screenshot, (x1, y1), 10, (0, 0, 255, 255), -1)  # Red start with alpha
+            cv.circle(annotated_screenshot, (x2, y2), 10, (0, 0, 255, 255), 3)  # Red hollow end with alpha
+            self.log(f"SWIPE from ({x1}, {y1}) to ({x2}, {y2}) duration:{duration}ms", screenshot=annotated_screenshot)
+
         self.andy.touch(x1, y1, x2, y2, delay=duration)
 
     # ============================================================================
