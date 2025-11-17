@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title id="pageTitle">Bot Remote Monitor</title>
+    <link rel="stylesheet" href="styles.css?v=20251116021">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="app.js?v=20251116012"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="container">
+            <div class="header-row">
+                <button id="settingsToggle" class="settings-toggle" title="Settings">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"/>
+                    </svg>
+                </button>
+                <div class="current-device">
+                    <div class="status-indicator" id="statusIndicator"></div>
+                    <span id="currentDeviceName">No device selected</span>
+                </div>
+                <div class="apply-mode header-apply-mode">
+                    <label class="radio-label">
+                        <input type="radio" name="applyModeHeader" value="current" checked>
+                        <span>Current</span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="applyModeHeader" value="all">
+                        <span>ALL</span>
+                    </label>
+                </div>
+            </div>
+            <div id="settingsPanel" class="settings-panel" style="display: none;">
+                <div class="settings-section">
+                    <h4>Live Feed Settings</h4>
+                    <div class="interval-control">
+                        <label for="screenshotFPS">Screenshot FPS:</label>
+                        <select id="screenshotFPS" onchange="setScreenshotFPS()">
+                            <option value="1">1 FPS (Low)</option>
+                            <option value="3">3 FPS (Medium)</option>
+                            <option value="5" selected>5 FPS (Default)</option>
+                            <option value="10">10 FPS (High)</option>
+                            <option value="15">15 FPS (Very High)</option>
+                            <option value="20">20 FPS (Maximum)</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <h4>Auto-Refresh (Fallback)</h4>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="autoRefresh" checked>
+                        <span>Enabled</span>
+                    </label>
+                    <div class="interval-control">
+                        <label for="refreshInterval">Interval (s):</label>
+                        <input type="number" id="refreshInterval" value="0.5" min="0.1" step="0.1">
+                        <button id="setInterval" class="btn btn-sm">Set</button>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <h4>Bot Settings</h4>
+                    <div class="settings-controls" id="botSettings">
+                        <!-- Bot settings will be populated from config -->
+                        <div class="setting-row">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="debugEnabled" onchange="sendSetting('debug_enabled')">
+                                <span>Debug Mode</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <h4>System Stats</h4>
+                    <div id="statsText" class="stats-content">Loading...</div>
+                </div>
+                <div class="settings-section">
+                    <h4>Device Status</h4>
+                    <div id="headerStatusInfo" class="status-content">Select a device to view status</div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="container">
+            <div class="layout">
+                <!-- Left Panel - Device List -->
+                <aside class="sidebar">
+                    <div class="device-list" id="deviceList">
+                        <div class="loading">Loading devices...</div>
+                    </div>
+                </aside>
+
+                <!-- Right Panel - Device Details -->
+                <section class="details-panel">
+                    <div id="deviceDetails" class="device-details">
+                        <div class="no-selection">
+                            Select a device from the list to view details
+                        </div>
+                    </div>
+
+                    <!-- Device Details Content (shown when device selected) -->
+                    <div id="deviceContent" class="device-content" style="display: none;">
+                        <!-- Screenshot Section -->
+                        <div class="card screenshot-card">
+                            <div class="screenshot-main-container">
+                                <div class="screenshot-container" id="screenshotContainer">
+                                    <div class="screenshot-placeholder">No screenshot available</div>
+                                    <canvas id="screenshotCanvas" style="display: none;"></canvas>
+                                </div>
+                                <!-- Preview screenshots container (shown when ALL mode is active) -->
+                                <div class="screenshot-previews" id="screenshotPreviews" style="display: none;">
+                                    <!-- Preview screenshots will be dynamically added here -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Remote Control Section -->
+                        <div class="card control-panel">
+                            <!-- Apply Mode Toggle -->
+                            <div class="apply-mode">
+                                <label class="radio-label">
+                                    <input type="radio" name="applyModePanel" value="current" checked>
+                                    <span>Current</span>
+                                </label>
+                                <label class="radio-label">
+                                    <input type="radio" name="applyModePanel" value="all">
+                                    <span>ALL</span>
+                                </label>
+                            </div>
+
+                            <hr>
+
+                            <!-- Function Controls -->
+                            <div class="control-section collapsible-section">
+                                <h4 class="collapsible-header" onclick="toggleSection('functionControls')">
+                                    Function Controls
+                                    <span class="collapse-icon" id="functionControlsIcon">▼</span>
+                                </h4>
+                                <div class="collapsible-content" id="functionControlsContent">
+                                    <div class="checkbox-grid" id="functionControls">
+                                        <!-- Populated by JavaScript -->
+                                    </div>
+                                </div>
+                            </div>
+
+                            <hr>
+
+                            <!-- Shortcuts -->
+                            <div class="control-section collapsible-section shortcuts-section">
+                                <h4 class="collapsible-header" onclick="toggleSection('shortcuts')">
+                                    Shortcuts
+                                    <span class="collapse-icon collapsed" id="shortcutsIcon">▼</span>
+                                </h4>
+                                <div class="collapsible-content collapsed" id="shortcutsContent">
+                                    <div class="shortcuts-grid" id="shortcutsGrid">
+                                        <!-- Shortcuts will be populated from config -->
+                                    </div>
+                                </div>
+                            </div>
+
+                            <hr>
+
+                            <!-- Recent Log -->
+                            <div class="control-section">
+                                <h4>Recent Log</h4>
+                                <div class="log-container" id="logContainer">
+                                    <pre id="logText">No log entries</pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+
+</body>
+</html>

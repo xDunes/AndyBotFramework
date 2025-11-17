@@ -1,5 +1,10 @@
 {
   "default_device": "Device1",
+  "function_layout": [
+    ["doStreet", "doStudio", "doGroup"],
+    ["doHelp", "doCoin", "doHeal"],
+    ["doRally", "doConcert", "doParking"]
+  ],
   "devices": {
     "Device1": {
       "email": "user1@example.com",

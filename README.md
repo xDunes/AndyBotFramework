@@ -1,6 +1,6 @@
-# Apex-Girl Bot Framework
+# Andy Bot Framework
 
-[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.6%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -20,6 +20,7 @@ A Python-based automation framework for Android games with GUI interface, featur
 - [Utility Scripts](#-utility-scripts)
 - [Configuration](#-configuration)
 - [Usage](#-usage)
+- [Web Interface & Remote Monitoring](#-web-interface--remote-monitoring)
 - [Creating Your Own Bot](#-creating-your-own-bot)
 - [Troubleshooting](#-troubleshooting)
 - [Version Tracking](#-version-tracking)
@@ -34,10 +35,13 @@ A Python-based automation framework for Android games with GUI interface, featur
 - 🎯 **Image recognition** - OpenCV-based template matching for game elements
 - 📝 **OCR support** - Tesseract integration for reading in-game text
 - 🎨 **GUI interface** - Tkinter-based control panel with real-time logging
+- 🌐 **Web interface** - Remote monitoring and control via browser (desktop & mobile)
+- 📊 **State monitoring** - Real-time multi-bot state tracking with SQLite
 - 🔧 **Utility tools** - Screenshot capture, window arrangement, and more
 - 📊 **Debug logging system** - SQLite-based persistent logging with screenshot storage
 - 🔍 **LogViewer** - Standalone debug log viewer with session browsing and inline image display
 - ⚡ **Auto-start capability** - Bots can auto-connect and start on launch
+- ⌨️ **Control key override** - Hold Ctrl to skip functions without stopping the bot
 
 ---
 
@@ -477,7 +481,7 @@ The script will automatically run `adb shell getprop ro.boot.serialno` and displ
 3. **GUI Controls:**
    - **Function Checkboxes:** Enable/disable specific bot actions
      - Street, Artists, Studio, Tour, Group
-     - Concert, Help, Coin, Heal, spamHQ, Rally
+     - Concert, Help, Coin, Heal, Rally
    - **Shortcuts:** Quick action buttons for immediate execution
      - **1 fan:** Send one character to assist a group building (executes on next bot loop)
    - **Settings:**
@@ -505,6 +509,68 @@ The script will automatically run `adb shell getprop ro.boot.serialno` and displ
 - **Smart auto-uncheck:** Studio and Street uncheck when tasks complete
 - **Shortcuts system:** Quick action buttons for immediate execution (e.g., "1 fan" for single group assist)
 - **Persistent logging:** Scroll through 300 most recent log entries
+
+### Control Key Override
+
+Hold the **Ctrl** key during bot execution to temporarily skip function execution without stopping the bot. This is useful for manual intervention when needed.
+
+- Press and hold **Ctrl** before a function would execute
+- The bot will skip that function and continue to the next
+- Release **Ctrl** to resume normal automation
+
+---
+
+## 🌐 Web Interface & Remote Monitoring
+
+The framework includes a Flask-based web interface for remote monitoring and control of your bots from any device on your network.
+
+### Features
+
+- **Real-time monitoring** - View bot status, checkboxes, settings, and logs
+- **Remote control** - Toggle checkboxes, adjust settings, send tap/swipe commands
+- **Screenshot viewing** - View live screenshots from all devices
+- **Multi-device support** - Control all bots from a single interface
+- **Mobile-friendly** - Responsive design works on phones and tablets
+- **Auto-refresh** - Configurable refresh intervals (1-60 seconds)
+
+### Quick Start
+
+1. **Install web dependencies:**
+   ```bash
+   pip install -r web/requirements.txt
+   ```
+
+2. **Start the web server:**
+   ```bash
+   python web/server.py
+   ```
+
+3. **Access from browser:**
+   - Local: http://localhost:5000
+   - Network: http://YOUR_IP:5000
+
+### Detailed Documentation
+
+For comprehensive setup instructions, including:
+- Background execution (runs even when terminal is closed)
+- Windows Task Scheduler (auto-start on boot)
+- Remote access via ngrok or port forwarding
+- Mobile access configuration
+- API documentation
+
+See the complete guide: [web/README.md](web/README.md)
+
+### State Monitoring System
+
+The web interface is powered by a SQLite-based state monitoring system that tracks:
+- Real-time bot state (running/stopped)
+- Function checkboxes (enabled/disabled)
+- Settings (sleep time, debug mode, etc.)
+- Recent log entries
+- Screenshots (JPEG compressed)
+- Heartbeat timestamps
+
+For technical details and API reference, see: [STATE_MONITORING_README.md](STATE_MONITORING_README.md)
 
 ---
 

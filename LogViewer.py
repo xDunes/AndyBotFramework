@@ -175,8 +175,6 @@ class LogViewer:
         self.text_widget.pack(side="left", fill="both", expand=True)
 
         # No container needed - we embed widgets directly in Text widget
-        self.container = None  # Not used with Text widget approach
-        self.canvas = None  # For backwards compatibility
 
         # Configure tags for styling
         self.text_widget.tag_config("header", font=("Courier", 9, "bold"), foreground="blue")
@@ -580,26 +578,10 @@ class LogViewer:
             error_label.pack()
             return None
 
-    def add_log_entry(self, entry):
-        """Legacy method - redirect to optimized version"""
-        self.add_log_entry_optimized(entry)
-
     def scroll_to_bottom(self):
         """Scroll to the bottom of the log content"""
         # For Text widget, just scroll to end
         self.text_widget.see("end")
-
-    def _scroll_bottom_update(self, iteration):
-        """No longer needed with Text widget"""
-        pass
-
-    def load_visible_images(self):
-        """DEPRECATED: No longer used with eager loading. Kept for compatibility."""
-        pass
-
-    def load_image_now(self, entry_id):
-        """DEPRECATED: No longer used with eager loading. Kept for compatibility."""
-        pass
 
     def clear_current_session(self):
         """Clear the currently selected session"""
@@ -789,10 +771,6 @@ class LogViewer:
         except Exception as e:
             messagebox.showerror("Error", f"Error clearing logs: {e}")
             self.status_var.set(f"Error clearing logs: {e}")
-
-    def unload_image(self, entry_id):
-        """DEPRECATED: No longer used with eager loading. Kept for compatibility."""
-        pass
 
     def add_inline_image(self, parent_frame, screenshot):
         """Add an image inline from numpy array

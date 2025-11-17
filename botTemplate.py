@@ -29,6 +29,7 @@ import threading
 import cv2 as cv
 from datetime import datetime
 from log_database import LogDatabase
+from state_manager import StateManager
 import subprocess
 
 # ============================================================================
@@ -223,6 +224,14 @@ class BotGUI:
         self.screenshot_running = False
         self.screenshot_thread = None
 
+        # Live screenshot updater for remote monitoring
+        self.live_screenshot_running = False
+        self.live_screenshot_thread = None
+
+        # Remote command monitoring (runs independently of bot loop)
+        self.remote_monitoring_running = False
+        self.remote_monitoring_thread = None
+
         # Log buffer
         self.log_buffer = []
 
@@ -240,10 +249,60 @@ class BotGUI:
         if self.debug.get():
             self.log_db = LogDatabase(self.username)
 
+        # State monitoring setup for remote management
+        self.state_manager = StateManager(self.username)
+        self._state_update_counter = 0  # Counter to throttle state updates
+
         self.create_widgets()
 
         # Enable debug callback to initialize database when checkbox is toggled
         self.debug.trace_add('write', self._on_debug_toggle)
+
+        # Setup state update callbacks for remote management
+        self._setup_state_callbacks()
+
+        # Start remote monitoring thread (runs independently of bot loop)
+        self.start_remote_monitoring()
+
+    def _setup_state_callbacks(self):
+        """Setup callbacks to update state manager when GUI changes"""
+        # Add trace callbacks for all checkboxes
+        for func_name, var in self.function_states.items():
+            var.trace_add('write', lambda *args, fn=func_name: self._on_checkbox_change(fn))
+
+        # Add trace callbacks for settings
+        self.debug.trace_add('write', self._on_settings_change)
+        self.sleep_time.trace_add('write', self._on_settings_change)
+        self.screenshot_interval.trace_add('write', self._on_settings_change)
+
+    def _on_checkbox_change(self, checkbox_name):
+        """Called when a checkbox state changes"""
+        self._update_full_state()
+
+    def _on_settings_change(self, *args):
+        """Called when a setting changes"""
+        self._update_full_state()
+
+    def _update_full_state(self):
+        """Update full state in database for remote monitoring"""
+        try:
+            # Build state dictionary
+            state = {
+                'is_running': self.is_running,
+                'debug_enabled': self.debug.get(),
+                'sleep_time': float(self.sleep_time.get()) if self.sleep_time.get() else 1.0,
+                'screenshot_interval': float(self.screenshot_interval.get()) if self.screenshot_interval.get() else 0,
+            }
+
+            # Add all function states
+            for func_name, var in self.function_states.items():
+                state[func_name] = var.get()
+
+            # Update state in database
+            self.state_manager.update_state(state)
+        except Exception:
+            # Silently ignore errors to prevent disrupting GUI
+            pass
 
     def _on_debug_toggle(self, *_):
         """Handle debug checkbox toggle - initialize/close database"""
@@ -499,6 +558,152 @@ class BotGUI:
         if action_text:
             self.current_action_label.config(text=f"Action: {action_text}")
 
+    def start_remote_monitoring(self):
+        """Start background thread to monitor remote commands
+
+        This thread runs independently of the bot loop, allowing remote
+        commands to be processed even when the bot is stopped.
+        """
+        if self.remote_monitoring_running:
+            return
+
+        self.remote_monitoring_running = True
+
+        def remote_monitor_loop():
+            """Background loop that checks for remote commands"""
+            global bot
+
+            while self.remote_monitoring_running:
+                try:
+                    # Only process commands if we have a state manager
+                    if hasattr(self, 'state_manager'):
+                        # Get pending commands for this device
+                        commands = self.state_manager.get_pending_commands()
+
+                        for cmd in commands:
+                            cmd_type = cmd['command_type']
+                            cmd_data = cmd['command_data']
+
+                            if cmd_type == 'checkbox' and cmd_data:
+                                # Update checkbox state
+                                checkbox_name = cmd_data.get('name')
+                                enabled = cmd_data.get('enabled')
+
+                                if checkbox_name in self.function_states:
+                                    self.function_states[checkbox_name].set(enabled)
+                                    self.log(f"Remote: {checkbox_name} set to {enabled}")
+
+                            elif cmd_type == 'setting' and cmd_data:
+                                # Update setting
+                                setting_name = cmd_data.get('name')
+                                value = cmd_data.get('value')
+
+                                if setting_name == 'sleep_time':
+                                    self.sleep_time.set(str(value))
+                                    self.log(f"Remote: Sleep time set to {value}")
+                                elif setting_name == 'screenshot_interval':
+                                    self.screenshot_interval.set(str(value))
+                                    self.log(f"Remote: Screenshot interval set to {value}")
+                                elif setting_name == 'debug_enabled':
+                                    self.debug.set(bool(value))
+                                    self.log(f"Remote: Debug enabled set to {value}")
+
+                            elif cmd_type == 'tap' and cmd_data:
+                                # Execute tap command (only if bot is running and connected)
+                                if self.is_running and 'bot' in globals() and bot is not None:
+                                    x = cmd_data.get('x')
+                                    y = cmd_data.get('y')
+                                    if x is not None and y is not None:
+                                        bot.tap(x, y)
+                                        self.log(f"Remote: Tap executed at ({x}, {y})")
+
+                            elif cmd_type == 'swipe' and cmd_data:
+                                # Execute swipe command (only if bot is running and connected)
+                                if self.is_running and 'bot' in globals() and bot is not None:
+                                    x1 = cmd_data.get('x1')
+                                    y1 = cmd_data.get('y1')
+                                    x2 = cmd_data.get('x2')
+                                    y2 = cmd_data.get('y2')
+                                    if all(v is not None for v in [x1, y1, x2, y2]):
+                                        bot.swipe(x1, y1, x2, y2)
+                                        self.log(f"Remote: Swipe executed from ({x1}, {y1}) to ({x2}, {y2})")
+
+                            elif cmd_type == 'stop_bot':
+                                # Stop the bot
+                                if self.is_running:
+                                    self.root.after(0, self.toggle_bot)
+                                    self.log("Remote: Stop command received")
+
+                            elif cmd_type == 'start_bot':
+                                # Start the bot
+                                if not self.is_running:
+                                    self.root.after(0, self.toggle_bot)
+                                    self.log("Remote: Start command received")
+
+                            # Mark command as processed
+                            self.state_manager.mark_command_processed(cmd['id'])
+
+                except Exception:
+                    # Silently ignore errors to prevent disrupting bot operation
+                    pass
+
+                # Check for commands every 0.5 seconds
+                time.sleep(0.5)
+
+        self.remote_monitoring_thread = threading.Thread(
+            target=remote_monitor_loop,
+            daemon=True,
+            name=f"RemoteMonitor-{self.username}"
+        )
+        self.remote_monitoring_thread.start()
+
+    def stop_remote_monitoring(self):
+        """Stop the remote monitoring thread"""
+        self.remote_monitoring_running = False
+        if self.remote_monitoring_thread:
+            self.remote_monitoring_thread.join(timeout=1.0)
+
+    def start_live_screenshot_updater(self):
+        """Start background thread to update screenshots for remote monitoring
+
+        This provides a near-live feed for the web interface.
+        Screenshots are updated at high frequency (0.5s) independent of bot loop.
+        """
+        if self.live_screenshot_running:
+            return
+
+        self.live_screenshot_running = True
+
+        def screenshot_update_loop():
+            """Background loop that captures and stores screenshots"""
+            global andy
+            while self.live_screenshot_running:
+                try:
+                    if andy is not None and hasattr(self, 'state_manager'):
+                        # Capture screenshot
+                        screenshot = andy.capture_screen()
+                        # Update screenshot in state manager
+                        self.state_manager.update_screenshot(screenshot)
+                except Exception:
+                    # Silently ignore errors to prevent disrupting bot operation
+                    pass
+
+                # Update every 0.5 seconds for near-live feed
+                time.sleep(0.5)
+
+        self.live_screenshot_thread = threading.Thread(
+            target=screenshot_update_loop,
+            daemon=True,
+            name=f"LiveScreenshot-{self.username}"
+        )
+        self.live_screenshot_thread.start()
+
+    def stop_live_screenshot_updater(self):
+        """Stop the live screenshot updater"""
+        self.live_screenshot_running = False
+        if self.live_screenshot_thread:
+            self.live_screenshot_thread.join(timeout=1.0)
+
     def toggle_bot(self):
         """Toggle bot on/off
 
@@ -520,10 +725,16 @@ class BotGUI:
             if bot is not None:
                 bot.should_stop = True
 
+            # Stop live screenshot updater
+            self.stop_live_screenshot_updater()
+
             self.toggle_button.config(text="Start")
             self.status_label.config(text="Stopped", foreground="red")
             self.current_action_label.config(text="Action: None")
             self.log("Stop button pressed - halting execution")
+
+            # Update state to stopped
+            self._update_full_state()
         else:
             # Start the bot
             self.is_running = True
@@ -531,6 +742,12 @@ class BotGUI:
             self.status_label.config(text="Running", foreground="green")
             self.bot_thread = threading.Thread(target=run_bot_loop, args=(self,), daemon=True)
             self.bot_thread.start()
+
+            # Start live screenshot updater for remote monitoring
+            self.start_live_screenshot_updater()
+
+            # Update state to running
+            self._update_full_state()
 
     def toggle_screenshot(self):
         """Toggle screenshot capture on/off

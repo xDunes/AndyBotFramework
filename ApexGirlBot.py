@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 from datetime import datetime
 from log_database import LogDatabase
+from state_manager import StateManager
 
 # ============================================================================
 # GLOBAL STATE
@@ -67,7 +68,18 @@ def log(message, screenshot=None):
 # ============================================================================
 
 def load_config():
-    """Load configuration from config.json (with caching)"""
+    """Load configuration from config.json with caching mechanism
+
+    Args:
+        None
+
+    Returns:
+        dict: Configuration dictionary containing device settings and layouts
+
+    Note:
+        Uses global cache to avoid repeated file I/O operations.
+        Cache persists for the lifetime of the process.
+    """
     global _cached_config
     if _cached_config is None:
         config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -77,7 +89,17 @@ def load_config():
 
 
 def get_device_config(user):
-    """Get device configuration for a specific user"""
+    """Get device configuration for a specific user
+
+    Args:
+        user (str): Username identifier from config.json
+
+    Returns:
+        dict: Device configuration containing serial, targets, etc.
+
+    Raises:
+        KeyError: If user is not found in config
+    """
     config = load_config()
     devices = config.get('devices', {})
     if user not in devices:
@@ -86,17 +108,38 @@ def get_device_config(user):
 
 
 def get_serial(user):
-    """Get device serial for a user"""
+    """Get Android device serial number for a user
+
+    Args:
+        user (str): Username identifier from config.json
+
+    Returns:
+        str: ADB device serial number
+    """
     return get_device_config(user)["serial"]
 
 
 def get_concert_target(user):
-    """Get concert target level for a user"""
+    """Get target concert level for a user
+
+    Args:
+        user (str): Username identifier from config.json
+
+    Returns:
+        int: Target concert level to search for
+    """
     return get_device_config(user)["concerttarget"]
 
 
 def get_stadium_target(user):
-    """Get stadium target level for a user"""
+    """Get target stadium level for a user
+
+    Args:
+        user (str): Username identifier from config.json
+
+    Returns:
+        int: Target stadium level to search for
+    """
     return get_device_config(user)["stadiumtarget"]
 
 
@@ -123,48 +166,64 @@ def format_cooldown_time(seconds):
 # ============================================================================
 
 def extract_ratio_from_image(bot, image, fallback_used=0, fallback_of=1):
-    """
-    Extract 'number/number' pattern from image using OCR
+    """Extract 'number/number' ratio pattern from image using multi-strategy OCR
+
+    This function uses multiple image preprocessing techniques and OCR configurations
+    to maximize accuracy when reading ratio patterns (e.g., "3/6", "0/4") from
+    game UI screenshots.
 
     Args:
-        bot: Bot instance for logging
-        image: Image to process
-        fallback_used: Default value for 'used' if OCR fails
-        fallback_of: Default value for 'of' if OCR fails
+        bot: Bot instance for logging errors
+        image: OpenCV image (BGR numpy array) to process
+        fallback_used: Default value for 'used' if all OCR attempts fail (default: 0)
+        fallback_of: Default value for 'of' if all OCR attempts fail (default: 1)
 
     Returns:
         dict: {'used': int, 'of': int}
+              - 'used': First number in ratio (numerator)
+              - 'of': Second number in ratio (denominator)
+              - Returns fallback values if OCR fails
+
+    Note:
+        Uses 4 preprocessing methods x 3 OCR configs = 12 total attempts
+        to find the ratio pattern, prioritizing exact matches over flexible ones.
     """
     try:
+        # Convert to grayscale for preprocessing
         gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
 
-        # Multiple preprocessing approaches
+        # Try multiple preprocessing approaches to handle different text styles/backgrounds
         processed_images = [
+            # Simple binary threshold at midpoint (127) - works for high contrast text
             ('Simple Threshold', cv.threshold(gray, 127, 255, cv.THRESH_BINARY)[1]),
+
+            # Adaptive threshold - adjusts to local brightness variations
             ('Adaptive Threshold', cv.adaptiveThreshold(gray, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2)),
+
+            # Otsu's method - automatically determines optimal threshold value
             ('OTSU Threshold', cv.threshold(gray, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)[1]),
         ]
 
-        # Add morphological processing
+        # Add morphological closing to remove small noise and connect broken characters
         kernel = np.ones((2, 2), np.uint8)
         morph = cv.morphologyEx(processed_images[2][1], cv.MORPH_CLOSE, kernel)
         processed_images.append(('Morphological', morph))
 
-        # OCR configurations to try
+        # OCR configurations to try (different Page Segmentation Modes)
         configs = [
-            r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789/',
-            r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789/',
-            r'--oem 3 --psm 13 -c tessedit_char_whitelist=0123456789/'
+            r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789/',   # PSM 8: Single word
+            r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789/',   # PSM 7: Single line
+            r'--oem 3 --psm 13 -c tessedit_char_whitelist=0123456789/'   # PSM 13: Raw line
         ]
 
-        # Test each processed image with each config
+        # Test each preprocessed image with each OCR config (12 combinations total)
         for name, processed_img in processed_images:
             pil_img = Image.fromarray(processed_img)
 
             for config in configs:
                 text = pytesseract.image_to_string(pil_img, config=config).strip()
 
-                # Look for exact number/number pattern
+                # Look for exact number/number pattern (e.g., "3/6")
                 match = RATIO_PATTERN.search(text)
                 if match:
                     return {
@@ -172,7 +231,7 @@ def extract_ratio_from_image(bot, image, fallback_used=0, fallback_of=1):
                         'of': int(match.group(2))
                     }
 
-                # Look for flexible pattern with possible spaces
+                # Look for flexible pattern with possible spaces (e.g., "3 / 6")
                 flexible_match = RATIO_PATTERN_FLEXIBLE.search(text)
                 if flexible_match:
                     return {
@@ -180,6 +239,7 @@ def extract_ratio_from_image(bot, image, fallback_used=0, fallback_of=1):
                         'of': int(flexible_match.group(2))
                     }
 
+        # All OCR attempts failed - return fallback values
         return {'used': fallback_used, 'of': fallback_of}
 
     except Exception as e:
@@ -188,74 +248,87 @@ def extract_ratio_from_image(bot, image, fallback_used=0, fallback_of=1):
 
 
 def get_active_cars(bot):
-    """Get the count of active cars (used/total)
+    """Get the count of active rally cars using OCR on car status area
+
+    Reads the car counter display (e.g., "2/3") from the game UI to determine
+    how many cars are currently active in rallies vs total available.
 
     Returns:
-        dict: {'used': int, 'of': int} or error codes:
-              - {'used': -2, 'of': 3} if no cars sent
-              - {'used': 0, 'of': 2} if OCR fails (empty text)
+        dict: {'used': int, 'of': int} representing active/total cars
+              Special return codes:
+              - {'used': -2, 'of': 3} if no cars have been sent yet
+              - {'used': 0, 'of': 2} if OCR returns empty text
               - {'used': 0, 'of': 1} if pattern match fails
+
+    Note:
+        This function performs sophisticated OCR preprocessing to read white text
+        on potentially complex backgrounds. The preprocessing pipeline:
+        1. Isolates white pixels (threshold >= 200)
+        2. Upscales 6x for better OCR accuracy
+        3. Applies morphological operations to clean noise
+        4. Inverts to black text on white background (Tesseract preference)
     """
+    # Close any open dialogs first
     bot.find_and_click('x')
     sc = bot.screenshot()
+
+    # Crop to status indicator area (left side of car counter)
+    # Coordinates: rows 354-371, cols 1-35 (status icon area)
     crop = sc[354:371, 1:35]
 
+    # Check if "no cars sent" indicator is present
     if not bot.find_and_click('nocarssent', screenshot=crop, tap=False):
+        # No cars sent indicator found - return special code
         return {"used": -2, "of": 3}
 
+    # Take fresh screenshot and crop to car counter text area
     sc = bot.screenshot()
+    # Coordinates: rows 354-371, cols 35-70 (car counter text "X/Y")
     crop = sc[354:371, 35:70]
 
-    # Show the cropped region for debugging
-    #cv.imshow("Rally OCR - Cropped Region", crop)
-    #cv.waitKey(0)
-    #cv.destroyAllWindows()
+    # === WHITE TEXT ISOLATION PREPROCESSING ===
+    # Game UI has white text that may be on varying backgrounds
+    # Goal: Convert all non-white pixels to black, keeping only white text
 
-    # Isolate WHITE TEXT: Convert all non-white pixels to black
-    # Define white threshold (adjust tolerance as needed)
-    white_threshold = 200  # Pixels with values >= 200 are considered "white-ish"
+    white_threshold = 200  # Pixels >= 200 brightness considered "white-ish"
 
-    # Convert to grayscale first
+    # Convert to grayscale for thresholding
     gray = cv.cvtColor(crop, cv.COLOR_BGR2GRAY)
 
-    # Create binary mask: white pixels stay white (255), everything else becomes black (0)
+    # Binary threshold: white pixels (>= 200) become 255, rest become 0
     _, white_mask = cv.threshold(gray, white_threshold, 255, cv.THRESH_BINARY)
 
-    # Show the white-isolated image
-    #cv.imshow("Rally OCR - White Isolated", white_mask)
-    #cv.waitKey(0)
-    #cv.destroyAllWindows()
+    # === OCR PREPARATION PIPELINE ===
 
-    # Now prepare for OCR: resize, clean up, and invert
-    # Resize for better OCR
+    # 1. Upscale 6x using cubic interpolation for better OCR accuracy
+    #    Small text becomes more recognizable when larger
     resized = cv.resize(white_mask, None, fx=6, fy=6, interpolation=cv.INTER_CUBIC)
 
-    # Apply morphological operations to clean up noise
+    # 2. Apply morphological operations to clean up noise and connect broken characters
     kernel = np.ones((2, 2), np.uint8)
+    # MORPH_OPEN: Removes small white noise (erosion then dilation)
     cleaned = cv.morphologyEx(resized, cv.MORPH_OPEN, kernel, iterations=1)
+    # MORPH_CLOSE: Fills small black holes (dilation then erosion)
     cleaned = cv.morphologyEx(cleaned, cv.MORPH_CLOSE, kernel, iterations=1)
 
-    # Invert so text is BLACK on WHITE background (Tesseract preference)
+    # 3. Invert image so text is BLACK on WHITE (Tesseract works better this way)
     processed = cv.bitwise_not(cleaned)
 
-    # Show the final processed image for debugging
-    #cv.imshow("Rally OCR - Final Processed", processed)
-    #cv.waitKey(0)
-    #cv.destroyAllWindows()
-
-    # Try OCR with PSM 7 (single line) and restricted character set
+    # === OCR EXECUTION ===
+    # PSM 7: Treat image as single text line
+    # Whitelist: Only recognize digits 0-9 and forward slash
     text = pytesseract.image_to_string(
         processed,
         config='--psm 7 -c tessedit_char_whitelist=0123456789/'
     )
 
-    # Clean up whitespace
     text = text.strip()
-    #bot.log(f'Rally OCR: "{text}"')
 
+    # Handle empty OCR result
     if text == "":
         return {"used": 0, "of": 2}
 
+    # Parse the "X/Y" pattern
     result = NUMBER_SLASH_PATTERN.search(text)
     if not result:
         bot.log(f'Rally OCR pattern match failed for: "{text}"')
@@ -268,19 +341,31 @@ def get_active_cars(bot):
 
 
 def get_record_count(bot):
-    """
-    Get the count of records in studio (used/total)
+    """Get the count of studio records using OCR
+
+    Reads the record counter from the studio UI to determine how many
+    albums are currently being recorded vs the maximum of 6.
 
     Returns:
-        dict: {'used': int, 'of': int} or {'used': -1, 'of': 6} on error
+        dict: {'used': int, 'of': 6} representing current/max records
+              - Normal: {'used': 0-6, 'of': 6}
+              - Error: {'used': -1, 'of': 6} if OCR fails
+
+    Note:
+        Coordinates: rows 775-800, cols 460-510 (record counter area at bottom)
+        Special case: Checks for exact "0/6" image match before attempting OCR
     """
     try:
         sc = bot.screenshot()
+        # Crop to record counter area (bottom of studio screen)
+        # Coordinates: rows 775-800, cols 460-510
         image = sc[775:800, 460:510]
 
+        # Check for exact image match of "0/6" (faster than OCR)
         if bot.find_and_click("record0", accuracy=0.99, tap=False, screenshot=image):
             return {'used': 0, 'of': 6}
 
+        # Use general ratio extraction with studio-specific fallback
         return extract_ratio_from_image(bot, image, fallback_used=-1, fallback_of=6)
 
     except Exception as e:
@@ -289,39 +374,57 @@ def get_record_count(bot):
 
 
 def adjust_level(bot, target):
-    """
-    Adjust the level selector to match target level
+    """Adjust the level selector UI to match target level using OCR and +/- buttons
+
+    This function reads the current level from the UI and clicks the increase/decrease
+    buttons until the desired target level is reached.
 
     Args:
-        bot: Bot instance
-        target: Target level (-1 to skip adjustment)
+        bot: Bot instance for OCR and clicking
+        target: Target level number to reach (-1 to skip adjustment entirely)
+
+    Note:
+        - Uses white pixel isolation OCR to read "Level X" text
+        - Clicks "search-min" button to decrease level
+        - Clicks "search-max" button to increase level
+        - Maximum 100 adjustment attempts to prevent infinite loops
+        - Crop coordinates: rows 830-850, cols 0-540 (level display area)
     """
     if target == -1:
         return
 
     was_level_adjusted = True
     level_adjust_count = 0
+    max_level_adjustments = 100  # Absolute safety limit to prevent infinite loops
 
-    while was_level_adjusted:
+    while was_level_adjusted and level_adjust_count < max_level_adjustments:
         was_level_adjusted = False
 
         if target != 0:
             sc = bot.screenshot()
+            # Crop to level display area at bottom of search screen
+            # Coordinates: rows 830-850, cols 0-540
             crop = sc[830:850, 0:540]
+
+            # === WHITE TEXT ISOLATION ===
+            # Isolate white pixels for "Level X" text recognition
             white_threshold = np.array([255, 255, 255, 255])  # RGBA format
-            tolerance = 40
+            tolerance = 40  # Allow pixels within 40 units of pure white
 
             # Create mask for pixels close to white
             mask = np.all(crop >= white_threshold - np.array([tolerance, tolerance, tolerance, 0]), axis=-1)
 
-            # Create processed image where non-white pixels are black
+            # Create processed image where only near-white pixels are kept
             processed_image = np.zeros_like(crop)
             processed_image[mask] = white_threshold
 
+            # OCR to extract level number from "Level X" text
+            # Whitelist: "Levl" (letters) and digits 0-9
             text = pytesseract.image_to_string(bot.prepare_image_for_ocr(processed_image),
                                                config='--psm 7 -c tessedit_char_whitelist="Levl1234567890')
             bot.log(f'Level OCR: {text}')
 
+            # Extract the level number from OCR text
             result = LEVEL_PATTERN.search(text)
             if not result:
                 bot.log("Level OCR: No result")
@@ -330,19 +433,26 @@ def adjust_level(bot, target):
             current_level = int(result.group('level'))
             bot.log(f'Target:{target} Cur:{current_level}')
 
+            # Click decrease button if current level is too high
             if target < current_level:
                 bot.find_and_click("search-min", tap=True, accuracy=0.95)
                 was_level_adjusted = True
                 level_adjust_count += 1
+            # Click increase button if current level is too low
             elif target > current_level:
                 bot.find_and_click("search-max", tap=True, accuracy=0.95)
                 level_adjust_count += 1
                 was_level_adjusted = True
 
-            time.sleep(1)
+            time.sleep(1)  # Wait for UI to update
 
+            # Safety check: if we've adjusted more times than the target level,
+            # something is wrong - stop adjusting
             if level_adjust_count > target:
                 was_level_adjusted = False
+
+    if level_adjust_count >= max_level_adjustments:
+        log(f"WARNING: Reached max level adjustment limit ({max_level_adjustments}) - stopping adjustments")
 
 
 # ============================================================================
@@ -381,8 +491,9 @@ def do_concert(bot, user):
     time.sleep(1)
     
     counter = 0
+    max_concert_loops = 10
 
-    while True:
+    while counter < max_concert_loops:
         counter += 1
         result = get_active_cars(bot)
 
@@ -399,16 +510,19 @@ def do_concert(bot, user):
 
             # Check if we have cars available to send
             sc = bot.screenshot()
-            crop = sc[350:370, 1:35]  # Crop to car status area
+            # Crop coordinates: rows 350-370, cols 1-35 (car status indicator area)
+            crop = sc[350:370, 1:35]
 
             # If no cars sent yet, need to select and send a car
             if not bot.find_and_click('nocarssent', screenshot=crop, tap=False, accuracy=0.97):
-                bot.tap(115, 790)  # Select car slot
+                # Tap coordinates (115, 790): Car selection slot in garage
+                bot.tap(115, 790)
                 time.sleep(0.5)
-                bot.tap(115, 790)  # Confirm selection
+                # Tap again to confirm car selection
+                bot.tap(115, 790)
                 time.sleep(1)
 
-                # Select concert action from menu
+                # Tap coordinates (95, 580): "Concert" action button in menu
                 bot.tap(95, 580)
                 time.sleep(0.5)
 
@@ -417,6 +531,7 @@ def do_concert(bot, user):
 
                 time.sleep(3)
             else:
+                # Tap coordinates (270, 460): Concert list/search area
                 bot.tap(270, 460)
 
             # Random delays and offsets for human-like behavior
@@ -440,23 +555,29 @@ def do_concert(bot, user):
                 # Check if teleport option appears
                 if bot.find_and_click("teleportx", tap=True, accuracy=0.99):
                     time.sleep(0.5)
-                    bot.tap(500, 830)  # Confirm teleport
+                    # Tap coordinates (500, 830): "Confirm" button for teleport dialog
+                    bot.tap(500, 830)
                     time.sleep(0.3)
-                    bot.tap(500, 830)  # Double confirm
+                    # Tap again to double-confirm teleport
+                    bot.tap(500, 830)
                     break
 
                 pause = random.randint(1, 100) / 100
         else:
             break
 
-        if counter > 9:
-            break
-
     # Wait for all cars to return before finishing
     # -2 indicates all cars have returned and are ready
-    while get_active_cars(bot)["used"] != -2:
+    car_wait_counter = 0
+    max_car_wait = 300  # 5 minutes (300 seconds)
+
+    while get_active_cars(bot)["used"] != -2 and car_wait_counter < max_car_wait:
         log("Waiting for cars to return...")
         time.sleep(1)
+        car_wait_counter += 1
+
+    if car_wait_counter >= max_car_wait:
+        log("WARNING: Timeout waiting for cars to return (5 minutes) - proceeding anyway")
 
 
 # ============================================================================
@@ -482,13 +603,10 @@ def do_rally(bot, user):
         - Uses random delays for human-like behavior
     """
 
-    if not bot.find_and_click('rallyavailable',tap=False) and not bot.find_and_click('dangerrally',tap=False):
+    if not bot.find_and_click('rallyavailable',tap=False) and not bot.find_and_click('dangerrally',tap=False) and not bot.find_and_click('rallyradiodanger') and not bot.find_and_click('rallynormalrally'):
         return
     # Check car availability
     result = get_active_cars(bot)
-
-    #while result["used"] == -1:
-    #    result = get_active_cars(bot)
 
     log(f'Rally Cars: {result["used"]}/{result["of"]}')
 
@@ -497,9 +615,9 @@ def do_rally(bot, user):
         return
 
     # Join rally
-    if bot.find_and_click('rallyavailable') or bot.find_and_click('dangerrally'):
+    if bot.find_and_click('rallyavailable') or bot.find_and_click('dangerrally') or bot.find_and_click('rallyradiodanger') or bot.find_and_click('rallynormalrally'):
         counter=0
-        while not bot.find_and_click('rallyjoin') and counter<=20:
+        while not bot.find_and_click('rallyjoin') and not bot.find_and_click('rallyradiojoin') and counter<=20:
             counter+=1
             time.sleep(0.5)
             if counter>20:
@@ -561,7 +679,8 @@ def do_studio(bot, user, stop):
     bot.find_and_click("screen-map")
     time.sleep(1)
 
-    bot.tap(485,850)
+    # Tap coordinates (485, 850): Studio building location on map
+    bot.tap(485, 850)
     time.sleep(1)
 
     log(f'Checking if record expired')
@@ -577,9 +696,16 @@ def do_studio(bot, user, stop):
     if result["used"] == -1:
         return False
 
-    while result["used"] > 6:
+    # Safety check: result["used"] should never be >6 from OCR, but protect against bad OCR reads
+    record_count_attempts = 0
+    while result["used"] > 6 and record_count_attempts < 20:
         time.sleep(0.1)
         result = get_record_count(bot)
+        record_count_attempts += 1
+
+    if record_count_attempts >= 20:
+        log(f"WARNING: Record count stuck at {result['used']}/6 - possible OCR error, treating as 6/6")
+        result = {'used': 6, 'of': 6}  # Force to safe value
 
     log(f'Records: {result["used"]}/{result["of"]}')
 
@@ -592,37 +718,77 @@ def do_studio(bot, user, stop):
 
     # Record a new album if slots are available
     if result["used"] < result["of"]:
-        while not bot.find_and_click("studio", tap=True, accuracy=0.99):
+        studio_counter = 0
+        while not bot.find_and_click("studio", tap=True, accuracy=0.99) and studio_counter < 100:
             time.sleep(0.5)
+            studio_counter += 1
+        if studio_counter >= 100:
+            log("WARNING: Studio button not found after 100 attempts")
+            return False
         time.sleep(1)
 
         bot.find_and_click("askhelp", tap=True, accuracy=0.90)
         time.sleep(1)
 
-        while not bot.find_and_click("record", tap=True, accuracy=0.99):
+        record_counter = 0
+        while not bot.find_and_click("record", tap=True, accuracy=0.99) and record_counter < 100:
             time.sleep(0.1)
+            record_counter += 1
+        if record_counter >= 100:
+            log("WARNING: Record button not found after 100 attempts")
+            return False
 
-        while not bot.find_and_click("select", tap=True, accuracy=0.99):
+        select_counter = 0
+        while not bot.find_and_click("select", tap=True, accuracy=0.99) and select_counter < 100:
             time.sleep(0.1)
+            select_counter += 1
+        if select_counter >= 100:
+            log("WARNING: Select button not found after 100 attempts")
+            return False
 
-        while not bot.find_and_click("autoassign", tap=True, accuracy=0.99):
+        autoassign_counter = 0
+        while not bot.find_and_click("autoassign", tap=True, accuracy=0.99) and autoassign_counter < 100:
             time.sleep(0.1)
+            autoassign_counter += 1
+        if autoassign_counter >= 100:
+            log("WARNING: Autoassign button not found after 100 attempts")
+            return False
         time.sleep(1)
 
-        while not bot.find_and_click("start", tap=True, accuracy=0.92):
+        start_counter = 0
+        while not bot.find_and_click("start", tap=True, accuracy=0.92) and start_counter < 100:
             time.sleep(0.1)
+            start_counter += 1
+        if start_counter >= 100:
+            log("WARNING: Start button not found after 100 attempts")
+            return False
         time.sleep(1)
 
-        while not bot.find_and_click("skip", tap=True, accuracy=0.99):
+        skip1_counter = 0
+        while not bot.find_and_click("skip", tap=True, accuracy=0.99) and skip1_counter < 100:
             time.sleep(0.1)
+            skip1_counter += 1
+        if skip1_counter >= 100:
+            log("WARNING: Skip button (1) not found after 100 attempts")
+            return False
         time.sleep(1)
 
-        while not bot.find_and_click("skip", tap=True, accuracy=0.92):
+        skip2_counter = 0
+        while not bot.find_and_click("skip", tap=True, accuracy=0.92) and skip2_counter < 100:
             time.sleep(0.1)
+            skip2_counter += 1
+        if skip2_counter >= 100:
+            log("WARNING: Skip button (2) not found after 100 attempts")
+            return False
         time.sleep(1)
 
-        while not bot.find_and_click("claim", tap=True, accuracy=0.99):
+        claim_counter = 0
+        while not bot.find_and_click("claim", tap=True, accuracy=0.99) and claim_counter < 100:
             time.sleep(0.1)
+            claim_counter += 1
+        if claim_counter >= 100:
+            log("WARNING: Claim button not found after 100 attempts")
+            return False
         time.sleep(1)
 
     # Return False - continue checking, not at 6/6 yet
@@ -724,8 +890,15 @@ def assist(bot, use_min_fans=True):
 
     # Keep clicking settings until it's gone (or brokensettings appears)
     log("Clicking 'settings' until dialog opens")
-    while bot.find_and_click("settings") or bot.find_and_click("brokensettings", offset_y=5):
+    settings_timeout = 0
+    max_settings_timeout = 300  # 30 seconds (300 * 0.1s)
+
+    while (bot.find_and_click("settings") or bot.find_and_click("brokensettings", offset_y=5)) and settings_timeout < max_settings_timeout:
         time.sleep(0.1)
+        settings_timeout += 1
+
+    if settings_timeout >= max_settings_timeout:
+        log("WARNING: Settings button timeout (30s) - dialog may not have opened properly")
 
     time.sleep(2)
     log("Settings dialog opened - configuring character selection")
@@ -736,12 +909,17 @@ def assist(bot, use_min_fans=True):
 
     log("Unchecking all character filters")
     check_count = 0
-    while bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y):
+    max_uncheck = 10  # Prevent infinite clicking
+
+    while bot.find_and_click("checked", accuracy=0.92, offset_x=offset_x, offset_y=offset_y) and check_count < max_uncheck:
         check_count += 1
         time.sleep(0.1)
         offset_x = random.randint(1, 15)
         offset_y = random.randint(1, 10)
     log(f"Unchecked {check_count} character filters")
+
+    if check_count >= max_uncheck:
+        log("WARNING: Reached max uncheck limit (10) - may still have checked filters")
 
     # Click twice more to ensure all are unchecked
     time.sleep(1)
@@ -751,6 +929,7 @@ def assist(bot, use_min_fans=True):
 
     # Swipe to reveal SSR characters
     log("Swiping to reveal SSR characters")
+    # Swipe coordinates: from (270, 630) to (270, -700) - vertical swipe down to scroll character list
     bot.swipe(270, 630, 270, -700)
 
     time.sleep(3)
@@ -809,6 +988,7 @@ def send_assist(bot, use_min_fans=True):
 
     if not (in_settings or in_assist or in_join):
         log("Not in settings/assist/join screen - tapping building location")
+        # Tap coordinates (270, 470): Building location on zone map to open menu
         bot.tap(270, 470)
         time.sleep(1.5)
 
@@ -835,15 +1015,23 @@ def send_assist(bot, use_min_fans=True):
 
             if not clicked_assist and bot.find_and_click("sendassist", accuracy=0.99,tap=False):
                 # Keep clicking until button disappears (indicating it was successfully clicked)
-                while bot.find_and_click("sendassist", accuracy=0.99):
+                assist_click_counter = 0
+                while bot.find_and_click("sendassist", accuracy=0.99) and assist_click_counter < 100:
                     time.sleep(0.1)
+                    assist_click_counter += 1
+                if assist_click_counter >= 100:
+                    log("WARNING: Send assist button click limit reached (100)")
                 clicked_assist = True
                 log("Successfully clicked 'assist' button")
 
             if not clicked_join and bot.find_and_click("sendjoin", accuracy=0.99,tap=False):
                 # Keep clicking until button disappears
-                while bot.find_and_click("sendjoin", accuracy=0.99):
+                join_click_counter = 0
+                while bot.find_and_click("sendjoin", accuracy=0.99) and join_click_counter < 100:
                     time.sleep(1)
+                    join_click_counter += 1
+                if join_click_counter >= 100:
+                    log("WARNING: Send join button click limit reached (100)")
                 clicked_join = True
                 log("Successfully clicked 'join' button")
 
@@ -893,8 +1081,11 @@ def do_recover(bot, user):
     if on_map or on_main:
         # Already on correct screen, no recovery needed
         if bot.find_and_click("fixmapassist", accuracy=0.99,tap=False):
+            # Tap coordinates (250, 880): Click away from assist dialog on map
             bot.tap(250, 880)
             log("Recovery: Clicked away from Assist")
+        if bot.find_and_click("fixratingpopup", accuracy=0.99):
+            log("Recovery: Exiting Rating Pop-up")
         return
 
     # Not on correct screen - attempt recovery
@@ -905,6 +1096,11 @@ def do_recover(bot, user):
 
     while not (on_map or on_main) and recovery_attempts < max_attempts:
         recovery_attempts += 1
+
+        # Check if Fix checkbox was unchecked (exit early if disabled)
+        if bot.gui and hasattr(bot.gui, 'fix_enabled') and not bot.gui.fix_enabled.get():
+            log("Recovery: Fix checkbox disabled - exiting recovery loop")
+            return
 
         # Try various close/back buttons
         if bot.find_and_click("fixgroupgiftx", accuracy=0.99):
@@ -918,7 +1114,8 @@ def do_recover(bot, user):
         if bot.find_and_click("fixgameclosed", accuracy=0.99):
             log("Recovery: Clicked open game")
         if bot.find_and_click("fixceocard",accuracy=0.99,tap=False):
-            bot.tap(250,880)
+            # Tap coordinates (250, 880): Click away from CEO card popup
+            bot.tap(250, 880)
             log("Recovery: Clicked away on CEO card")
         if bot.find_and_click("fixgenericback",accuracy=0.91):
             log("Recovery: Clicked Back")
@@ -928,7 +1125,13 @@ def do_recover(bot, user):
         # Handle maintenance notification (wait 5 minutes if found)
         if bot.find_and_click("fixmaintenanceconfirm", accuracy=0.99):
             log("Recovery: Maintenance detected - waiting 5 minutes")
-            time.sleep(300)
+            # Wait in 10-second intervals to allow early exit if Fix is unchecked
+            for _ in range(30):  # 30 iterations * 10 seconds = 300 seconds (5 minutes)
+                time.sleep(10)
+                # Check if Fix checkbox was unchecked during wait
+                if bot.gui and hasattr(bot.gui, 'fix_enabled') and not bot.gui.fix_enabled.get():
+                    log("Recovery: Fix checkbox disabled during maintenance wait - exiting")
+                    return
 
         time.sleep(0.1)
 
@@ -1022,6 +1225,7 @@ def do_group(bot, user):
     if bot.find_and_click("giftcollect"):
         log("Collecting gifts")
         time.sleep(1)
+        # Tap coordinates (250, 880): Close gift collection dialog
         bot.tap(250, 880)
         time.sleep(2)
         gifts_collected = True
@@ -1029,8 +1233,10 @@ def do_group(bot, user):
     if bot.find_and_click("claimall"):
         log("Claiming all rewards")
         time.sleep(1)
+        # Tap coordinates (250, 880): Confirm claim
         bot.tap(250, 880)
         time.sleep(1)
+        # Tap again to close rewards dialog
         bot.tap(250, 880)
         time.sleep(2)
         gifts_collected = True
@@ -1049,6 +1255,7 @@ def do_group(bot, user):
     counter = 0
     while not bot.find_and_click("plan", tap=False):
         counter += 1
+        # Tap coordinates (250, 880): Close current dialog/return to group menu
         bot.tap(250, 880)
         time.sleep(0.5)
         if counter == 10:
@@ -1073,6 +1280,7 @@ def do_group(bot, user):
     # Navigate to zone
     while not bot.find_and_click("zone", accuracy=0.99):
         time.sleep(0.2)
+        # Tap coordinates (250, 880): Close dialogs/return to group menu
         bot.tap(250, 880)
         bot.find_and_click("rallyback")
 
@@ -1112,7 +1320,8 @@ def do_group(bot, user):
             buildings_found = False
         counter += 1
         time.sleep(0.1)
-        bot.swipe(270, 490, 400, 490)  # Swipe to reveal more buildings
+        # Swipe coordinates: from (270, 490) to (400, 490) - horizontal swipe to reveal more buildings
+        bot.swipe(270, 490, 400, 490)
 
     if buildings_found and counter <= 6:
         log(f"Building found requiring assistance (search attempts: {counter})")
@@ -1211,8 +1420,10 @@ def do_street(bot, user):
         time.sleep(1)
         bot.find_and_click("collectxp")
         time.sleep(2)
+        # Tap coordinates (250, 880): Close XP collection reward dialog
         bot.tap(250, 880)
         time.sleep(1)
+        # Tap again to close any follow-up dialogs
         bot.tap(250, 880)
         time.sleep(1)
         bot.find_and_click("tokyo2street")
@@ -1243,25 +1454,6 @@ def do_street(bot, user):
         bot.gui.function_states['doStreet'].set(False)
 
 
-def do_artists(bot, user):
-    """Perform artist-related activities - placeholder"""
-    _ = bot, user  # Unused - placeholder function
-    log("doArtists executed - not yet implemented")
-
-
-def do_tour(bot, user):
-    """Run a tour
-
-    Args:
-        bot: BOT instance for game interactions
-        user: Username for configuration lookups
-
-    Note:
-        Simple action - finds and clicks tour button
-    """
-    _ = user  # Unused parameter
-    bot.find_and_click("tour")
-    time.sleep(0.2)
 
 
 def do_help(bot, user):
@@ -1282,39 +1474,23 @@ def do_help(bot, user):
 def do_heal(bot, user):
     """Heal assist - find and click heal assist button
 
-    Attempts to find and click the heal assist button. If not found,
-    scrolls down to reveal it.
+    Attempts to find and click the heal assist button on the main screen.
+    If not immediately visible, scrolls down to reveal it.
 
     Args:
         bot: BOT instance for game interactions
-        user: Username for configuration lookups
+        user: Username for configuration lookups (unused)
 
     Note:
-        Uses swipe to scroll if button not immediately visible
+        Swipe coordinates: from (230, 830) to (230, 700) - vertical swipe up to scroll down
     """
     _ = user  # Unused parameter
     if not bot.find_and_click("healassist", accuracy=0.91):
         bot.log("Dragging to find heal assist")
+        # Swipe coordinates: from (230, 830) to (230, 700) - swipe up to reveal heal button
         bot.swipe(230, 830, 230, 700)
         time.sleep(3)
     time.sleep(0.5)
-
-
-def do_spam_hq(bot, user):
-    """Spam click company HQ
-
-    Repeatedly clicks the company headquarters location to
-    collect resources or trigger events.
-
-    Args:
-        bot: BOT instance for game interactions
-        user: Username for configuration lookups
-
-    Note:
-        Hard-coded coordinates (310, 745) for HQ location
-    """
-    _ = user  # Unused parameter
-    bot.tap(310, 745)
 
 
 def do_coin(bot, user):
@@ -1333,6 +1509,77 @@ def do_coin(bot, user):
     _ = user  # Unused parameter
     if bot.find_and_click("coinReady", tap=False, accuracy=0.99):
         bot.find_and_click("coin")
+
+
+def do_parking(bot, user):
+    """Perform parking-related activities
+
+    Placeholder function for parking functionality.
+    Implementation to be added.
+
+    Args:
+        bot: BOT instance for game interactions
+        user: Username for configuration lookups
+
+    Note:
+        This is a placeholder function
+    """
+    _ = user  # Unused parameter
+
+    # ========== PHASE 1: NAVIGATION ==========
+    log("Phase 1: Verifying screen state")
+    on_map = bot.find_and_click("screen-map", accuracy=0.99, tap=False)
+    on_main = bot.find_and_click("screen-main", accuracy=0.99, tap=False)
+
+    if not (on_map or on_main):
+        log("ERROR: Not on map or main screen - aborting do_group")
+        return
+    log(f"Screen verified - map:{on_map}, main:{on_main}")
+
+    if on_map:
+        bot.find_and_click('screen-map')
+    time.sleep(0.3)
+
+    # ========== PHASE 2: COLLECT ==========
+    # Search region: (x=10, y=570, width=85, height=20) - parking spot indicator area on main screen
+    first_check=bot.find_all('main-parking-activespot',accuracy=0.99,search_region=(10, 570, 85, 20))
+    time.sleep(0.3)
+    second_check=bot.find_all('main-parking-activespot',accuracy=0.99,search_region=(10, 570, 85, 20))
+    if first_check['count']==6 and second_check['count']==6:
+        log("Parking - All parking spots are currently active!")
+        return
+    else:
+        log(f'First: {first_check}')
+        log(f'Second: {second_check}')
+        bot.find_and_click('main-parking-button')
+        time.sleep(2)
+        log(bot.find_all('parking-main-claim'))
+        while bot.find_and_click('parking-main-claim'):
+            while not bot.find_and_click('parking-main-coin', accuracy=0.99,tap=False):
+                time.sleep(0.1)
+
+            while bot.find_and_click('parking-main-coin', tap=False):
+                # Tap coordinates (420, 90): Close coin collection popup
+                bot.tap(420, 90)
+                time.sleep(1)
+                
+            time.sleep(1)
+        # ========== PHASE 3: PARK ==========
+        # Swipe coordinates: from (270, 630) to (270, -700) - vertical swipe to scroll parking lot list
+        bot.swipe(270, 630, 270, -700)
+        if bot.find_and_click('parking-main-gardencarpark'):
+            time.sleep(2)
+
+        # Park cars in up to 6 available spots
+        for counter in range(6):
+            bot.find_and_click('parking-lot-findspot')
+            time.sleep(2)
+
+            
+        else:
+            return
+        log("Finished Parking!")
+        time.sleep(100000)
 
 
 # ============================================================================
@@ -1374,21 +1621,19 @@ class BotGUI:
         self.root.resizable(False, False)
 
         # Function enable/disable states - all start unchecked
-        # Order: Row 1: Street, Artists, Studio, Tour, Group
-        #        Row 2: Concert, Help, Coin, Heal, spamHQ
-        #        Row 3: Rally
+        # Order: Row 1: Street, Studio, Group
+        #        Row 2: Concert, Help, Coin, Heal
+        #        Row 3: Rally, Parking
         self.function_states = {
             'doStreet': tk.BooleanVar(value=False),
-            'doArtists': tk.BooleanVar(value=False),
             'doStudio': tk.BooleanVar(value=False),
-            'doTour': tk.BooleanVar(value=False),
             'doGroup': tk.BooleanVar(value=False),
             'doConcert': tk.BooleanVar(value=False),
             'doHelp': tk.BooleanVar(value=False),
             'doCoin': tk.BooleanVar(value=False),
             'doHeal': tk.BooleanVar(value=False),
-            'spamHQ': tk.BooleanVar(value=False),
-            'doRally': tk.BooleanVar(value=False)
+            'doRally': tk.BooleanVar(value=False),
+            'doParking': tk.BooleanVar(value=False)
         }
 
         # Special function states (moved to settings)
@@ -1407,6 +1652,14 @@ class BotGUI:
         # Screenshot state
         self.screenshot_running = False
         self.screenshot_thread = None
+
+        # Live screenshot updater for remote monitoring (high frequency)
+        self.live_screenshot_running = False
+        self.live_screenshot_thread = None
+
+        # Remote command monitoring (runs independently of bot loop)
+        self.remote_monitoring_running = False
+        self.remote_monitoring_thread = None
 
         # Log buffer
         self.log_buffer = []
@@ -1431,10 +1684,20 @@ class BotGUI:
         if self.debug.get():
             self.log_db = LogDatabase(self.username)
 
+        # State monitoring setup
+        self.state_manager = StateManager(self.username)
+        self._state_update_counter = 0  # Counter to throttle state updates
+
         self.create_widgets()
 
         # Enable debug callback to initialize database when checkbox is toggled
         self.debug.trace_add('write', self._on_debug_toggle)
+
+        # Setup state update callbacks for checkboxes and settings
+        self._setup_state_callbacks()
+
+        # Start remote monitoring thread (runs independently of bot loop)
+        self.start_remote_monitoring()
 
     def _on_debug_toggle(self, *_):
         """Handle debug checkbox toggle - initialize/close database
@@ -1464,6 +1727,81 @@ class BotGUI:
                 finally:
                     self.log_db = None
 
+    def _setup_state_callbacks(self):
+        """Setup callbacks to update state manager when GUI changes
+
+        Attaches trace callbacks to all GUI variables so that changes are
+        automatically synchronized to the state manager (for remote monitoring).
+
+        Note:
+            - Monitors all function checkboxes
+            - Monitors all settings (Fix, Debug, Sleep time, Studio stop, Screenshot interval)
+            - Performs initial state sync after setup
+        """
+        # Add trace callbacks for all checkboxes
+        for func_name, var in self.function_states.items():
+            var.trace_add('write', lambda *args, fn=func_name: self._on_checkbox_change(fn))
+
+        # Add trace callbacks for settings
+        self.fix_enabled.trace_add('write', self._on_settings_change)
+        self.debug.trace_add('write', self._on_settings_change)
+        self.sleep_time.trace_add('write', self._on_settings_change)
+        self.studio_stop.trace_add('write', self._on_settings_change)
+        self.screenshot_interval.trace_add('write', self._on_settings_change)
+
+        # Initial state update
+        self._update_full_state()
+
+    def _on_checkbox_change(self, checkbox_name):
+        """Handle checkbox state change - update state manager
+
+        Called automatically when any function checkbox is toggled.
+        Synchronizes the change to the state manager for remote monitoring.
+
+        Args:
+            checkbox_name (str): Name of the checkbox that changed (e.g., 'doConcert')
+        """
+        try:
+            enabled = self.function_states[checkbox_name].get()
+            self.state_manager.update_checkbox_state(checkbox_name, enabled)
+        except Exception as e:
+            print(f"Error updating checkbox state: {e}")
+
+    def _on_settings_change(self, *args):
+        """Handle settings change - update state manager
+
+        Called automatically when any setting variable changes.
+        Synchronizes all settings to the state manager for remote monitoring.
+
+        Args:
+            *args: Unused trace callback arguments
+        """
+        try:
+            self.state_manager.update_settings(
+                fix_enabled=self.fix_enabled.get(),
+                debug_enabled=self.debug.get(),
+                sleep_time=float(self.sleep_time.get()) if self.sleep_time.get() else 1.0,
+                studio_stop=int(self.studio_stop.get()) if self.studio_stop.get() else 6,
+                screenshot_interval=int(self.screenshot_interval.get()) if self.screenshot_interval.get() else 0
+            )
+        except Exception as e:
+            print(f"Error updating settings state: {e}")
+
+    def _update_full_state(self):
+        """Update all state in state manager - performs full synchronization
+
+        This method performs a complete state sync of all checkboxes and settings
+        to the state manager. Called during initialization.
+        """
+        try:
+            # Update all checkboxes
+            self.state_manager.update_all_checkbox_states(self.function_states)
+
+            # Update all settings
+            self._on_settings_change()
+        except Exception as e:
+            print(f"Error updating full state: {e}")
+
     def _get_timestamp(self, with_milliseconds=False):
         """Get formatted timestamp
 
@@ -1479,7 +1817,15 @@ class BotGUI:
         return now.strftime("%H:%M:%S")
 
     def create_widgets(self):
-        """Create all GUI widgets"""
+        """Create all GUI widgets and layout the interface
+
+        Builds the complete GUI structure including:
+        - Top bar with username and status
+        - Functions section with checkboxes
+        - Shortcuts section with quick action buttons
+        - Settings and controls section
+        - Log window at bottom
+        """
         # Top bar with username and status
         top_frame = ttk.Frame(self.root)
         top_frame.pack(fill="x", padx=3, pady=1)
@@ -1513,19 +1859,24 @@ class BotGUI:
         self._create_log_section()
 
     def _create_functions_section(self, parent):
-        """Create the functions checkboxes section"""
+        """Create the functions checkboxes section
+
+        Builds a grid of checkboxes for bot functions based on layout from config.json.
+        Each checkbox controls whether a specific function is enabled in the bot loop.
+
+        Args:
+            parent: Parent tkinter widget to attach this section to
+        """
         functions_frame = ttk.LabelFrame(parent, text="Functions", padding=1)
         functions_frame.pack(fill="x", padx=1)
 
-        # Define custom row layout
-        # Row 1: Street, Artists, Studio, Tour, Group
-        # Row 2: Help, Coin, Heal, spamHQ
-        # Row 3: Rally, Concert
-        row_layout = [
-            ['doStreet', 'doArtists', 'doStudio', 'doTour', 'doGroup'],
-            ['doHelp', 'doCoin', 'doHeal', 'spamHQ'],
-            ['doRally', 'doConcert']
-        ]
+        # Load function layout from config.json
+        config = load_config()
+        row_layout = config.get('function_layout', [
+            ['doStreet', 'doStudio', 'doGroup'],
+            ['doHelp', 'doCoin', 'doHeal'],
+            ['doRally', 'doConcert', 'doParking']
+        ])
 
         # Create rows
         for row_items in row_layout:
@@ -1556,7 +1907,19 @@ class BotGUI:
                     self.cooldown_labels[func_name] = cooldown_label
 
     def _create_controls_section(self, parent):
-        """Create the settings and control buttons section"""
+        """Create the settings and control buttons section
+
+        Builds the right-side panel containing:
+        - Bot loop sleep time setting
+        - Screenshot interval setting
+        - Debug and Fix checkboxes
+        - Screenshot button
+        - Open Log Viewer button
+        - Start/Stop button
+
+        Args:
+            parent: Parent tkinter widget to attach this section to
+        """
         right_frame = ttk.Frame(parent)
         right_frame.pack(side="right", fill="y", padx=1)
 
@@ -1607,7 +1970,18 @@ class BotGUI:
         self.toggle_button.pack(fill="x")
 
     def _create_shortcuts_section(self, parent):
-        """Create the shortcuts section under Functions"""
+        """Create the shortcuts section under Functions
+
+        Builds quick-action buttons for immediate execution of specific tasks:
+        - Min Fans: Send assist with minimum fans
+        - Max Fans: Send assist with maximum fans
+
+        These shortcuts execute immediately on the next bot loop iteration,
+        bypassing the normal function enable/disable checkboxes.
+
+        Args:
+            parent: Parent tkinter widget to attach this section to
+        """
         shortcuts_frame = ttk.LabelFrame(parent, text="Shortcuts", padding=2)
         shortcuts_frame.pack(fill="x", padx=1, pady=(2, 0))
 
@@ -1650,7 +2024,13 @@ class BotGUI:
         self.log("Max fans shortcut triggered - will execute on next bot loop")
 
     def _create_log_section(self):
-        """Create the log window section"""
+        """Create the log window section
+
+        Builds the scrollable text widget that displays bot activity logs.
+        - Maintains a 300-line buffer (FIFO)
+        - Auto-scrolls to bottom unless user has manually scrolled up
+        - Shows timestamps for each log entry
+        """
         log_frame = ttk.LabelFrame(self.root, text="Log", padding=1)
         log_frame.pack(fill="both", expand=True, padx=3, pady=1)
 
@@ -1671,12 +2051,23 @@ class BotGUI:
         self.log_text.bind("<Button-5>", self.on_user_scroll)
 
     def on_user_scroll(self, _event):
-        """Track when user manually scrolls"""
+        """Track when user manually scrolls the log window
+
+        Called on mouse wheel or scroll events. Schedules a check to determine
+        if the user has scrolled away from the bottom (disabling auto-scroll).
+
+        Args:
+            _event: Mouse event (unused)
+        """
         self.root.after(100, self.check_scroll_position)
         return
 
     def check_scroll_position(self):
-        """Check if log is scrolled to bottom"""
+        """Check if log is scrolled to bottom to enable/disable auto-scroll
+
+        If user is at the bottom (within 1%), auto-scrolling is enabled.
+        If user has scrolled up, auto-scrolling is disabled to preserve position.
+        """
         try:
             pos = self.log_text.yview()
             # If at bottom (within small threshold), enable auto-scroll
@@ -1696,6 +2087,7 @@ class BotGUI:
             - Maintains 300 line buffer (FIFO)
             - Auto-scrolls only if user hasn't manually scrolled up
             - In Debug mode: saves to database with milliseconds and screenshots
+            - Updates state manager with log and screenshot
         """
         # Determine if debug mode is on
         debug_mode = self.debug.get()
@@ -1726,6 +2118,16 @@ class BotGUI:
         self.log_text.delete(1.0, tk.END)
         self.log_text.insert(tk.END, "\n".join(self.log_buffer))
 
+        # Update state manager with log and screenshot
+        # Throttle updates - only update every 5th log entry to reduce DB load
+        self._state_update_counter += 1
+        if self._state_update_counter >= 5 or screenshot is not None:
+            self._state_update_counter = 0
+            try:
+                self.state_manager.add_log(message, screenshot)
+            except Exception as e:
+                print(f"Error updating state manager: {e}")
+
         # Auto-scroll only if user is at bottom (not manually scrolled up)
         if not self.user_scrolling:
             self.log_text.see(tk.END)
@@ -1753,6 +2155,7 @@ class BotGUI:
             - Sets bot.should_stop flag for immediate stopping
             - Runs bot in daemon thread
             - Updates GUI status indicators
+            - Updates state manager with running status
         """
         if self.is_running:
             # Stop the bot immediately
@@ -1764,10 +2167,19 @@ class BotGUI:
             if 'bot' in globals() and bot is not None:
                 bot.should_stop = True
 
+            # Stop live screenshot updater
+            self.stop_live_screenshot_updater()
+
             self.toggle_button.config(text="Start")
             self.status_label.config(text="Stopped", foreground="red")
             self.current_action_label.config(text="Action: None")
             self.log("Stop button pressed - halting execution")
+
+            # Mark as stopped in state manager
+            try:
+                self.state_manager.mark_stopped()
+            except Exception as e:
+                print(f"Error marking bot as stopped in state manager: {e}")
         else:
             # Start the bot
             self.is_running = True
@@ -1776,8 +2188,186 @@ class BotGUI:
             self.bot_thread = threading.Thread(target=run_bot_loop, args=(self,), daemon=True)
             self.bot_thread.start()
 
+            # Mark as running in state manager
+            try:
+                self.state_manager.mark_running()
+            except Exception as e:
+                print(f"Error marking bot as running in state manager: {e}")
+
+            # Start live screenshot updater for remote monitoring
+            self.start_live_screenshot_updater()
+
+    def start_live_screenshot_updater(self):
+        """Start background thread to update screenshots at high frequency for live feed
+
+        Updates screenshots every 200ms (~5 FPS) independent of bot loop.
+        This provides a near-live feed for the web interface.
+        """
+        if self.live_screenshot_running:
+            return
+
+        self.live_screenshot_running = True
+
+        def screenshot_update_loop():
+            """Background loop that captures and updates screenshots frequently"""
+            global bot
+
+            while self.live_screenshot_running and self.is_running:
+                try:
+                    # Capture screenshot from device
+                    if 'bot' in globals() and bot is not None and hasattr(bot, 'andy'):
+                        screenshot = bot.andy.screencap()
+                        if screenshot is not None:
+                            # Update state manager with JPEG encoding (fast)
+                            self.state_manager.update_screenshot(screenshot, quality=85)
+                except Exception as e:
+                    # Silently continue on errors to avoid disrupting bot
+                    pass
+
+                # Update every 200ms for ~5 FPS live feed
+                time.sleep(0.2)
+
+        self.live_screenshot_thread = threading.Thread(
+            target=screenshot_update_loop,
+            daemon=True,
+            name=f"LiveScreenshot-{self.username}"
+        )
+        self.live_screenshot_thread.start()
+
+    def stop_live_screenshot_updater(self):
+        """Stop the live screenshot updater thread"""
+        self.live_screenshot_running = False
+        if self.live_screenshot_thread:
+            self.live_screenshot_thread.join(timeout=1.0)
+
+    def start_remote_monitoring(self):
+        """Start background thread to monitor remote commands
+
+        This thread runs independently of the bot loop, allowing remote
+        commands to be processed even when the bot is stopped.
+        """
+        if self.remote_monitoring_running:
+            return
+
+        self.remote_monitoring_running = True
+
+        def remote_monitor_loop():
+            """Background loop that checks for remote commands"""
+            global bot
+
+            while self.remote_monitoring_running:
+                try:
+                    # Only process commands if we have a state manager
+                    if hasattr(self, 'state_manager'):
+                        # Get pending commands for this device
+                        commands = self.state_manager.get_pending_commands()
+
+                        for cmd in commands:
+                            cmd_type = cmd['command_type']
+                            cmd_data = cmd['command_data']
+
+                            if cmd_type == 'checkbox' and cmd_data:
+                                # Update checkbox state
+                                checkbox_name = cmd_data.get('name')
+                                enabled = cmd_data.get('enabled')
+
+                                if checkbox_name in self.function_states:
+                                    self.function_states[checkbox_name].set(enabled)
+                                    self.log(f"Remote: {checkbox_name} set to {enabled}")
+
+                            elif cmd_type == 'setting' and cmd_data:
+                                # Update setting
+                                setting_name = cmd_data.get('name')
+                                value = cmd_data.get('value')
+
+                                if setting_name == 'sleep_time':
+                                    self.sleep_time.set(str(value))
+                                    self.log(f"Remote: Sleep time set to {value}")
+                                elif setting_name == 'studio_stop':
+                                    self.studio_stop.set(str(value))
+                                    self.log(f"Remote: Studio stop set to {value}")
+                                elif setting_name == 'fix_enabled':
+                                    self.fix_enabled.set(bool(value))
+                                    self.log(f"Remote: Fix enabled set to {value}")
+                                elif setting_name == 'debug_enabled':
+                                    self.debug.set(bool(value))
+                                    self.log(f"Remote: Debug enabled set to {value}")
+
+                            elif cmd_type == 'tap' and cmd_data:
+                                # Execute tap command (only if bot is running and connected)
+                                if self.is_running and 'bot' in globals() and bot is not None:
+                                    x = cmd_data.get('x')
+                                    y = cmd_data.get('y')
+                                    if x is not None and y is not None:
+                                        bot.tap(x, y)
+                                        self.log(f"Remote: Tap executed at ({x}, {y})")
+
+                            elif cmd_type == 'swipe' and cmd_data:
+                                # Execute swipe command (only if bot is running and connected)
+                                if self.is_running and 'bot' in globals() and bot is not None:
+                                    x1 = cmd_data.get('x1')
+                                    y1 = cmd_data.get('y1')
+                                    x2 = cmd_data.get('x2')
+                                    y2 = cmd_data.get('y2')
+                                    if all(v is not None for v in [x1, y1, x2, y2]):
+                                        bot.swipe(x1, y1, x2, y2)
+                                        self.log(f"Remote: Swipe executed from ({x1}, {y1}) to ({x2}, {y2})")
+
+                            elif cmd_type == 'stop_bot':
+                                # Stop the bot
+                                if self.is_running:
+                                    self.root.after(0, self.toggle_bot)
+                                    self.log("Remote: Stop command received")
+
+                            elif cmd_type == 'start_bot':
+                                # Start the bot
+                                if not self.is_running:
+                                    self.root.after(0, self.toggle_bot)
+                                    self.log("Remote: Start command received")
+
+                            elif cmd_type == 'assist_shortcut' and cmd_data:
+                                # Execute assist shortcuts (only if bot is running)
+                                if self.is_running:
+                                    shortcut_name = cmd_data.get('name')
+                                    if shortcut_name == 'min_fans':
+                                        self.root.after(0, self.trigger_assist_min_fans)
+                                        self.log("Remote: Min Fans shortcut triggered")
+                                    elif shortcut_name == 'max_fans':
+                                        self.root.after(0, self.trigger_assist_max_fans)
+                                        self.log("Remote: Max Fans shortcut triggered")
+
+                            # Mark command as processed
+                            self.state_manager.mark_command_processed(cmd['id'])
+
+                except Exception:
+                    # Silently ignore errors to prevent disrupting bot operation
+                    pass
+
+                # Check for commands every 0.5 seconds
+                time.sleep(0.5)
+
+        self.remote_monitoring_thread = threading.Thread(
+            target=remote_monitor_loop,
+            daemon=True,
+            name=f"RemoteMonitor-{self.username}"
+        )
+        self.remote_monitoring_thread.start()
+
+    def stop_remote_monitoring(self):
+        """Stop the remote monitoring thread"""
+        self.remote_monitoring_running = False
+        if self.remote_monitoring_thread:
+            self.remote_monitoring_thread.join(timeout=1.0)
+
     def toggle_screenshot(self):
-        """Toggle screenshot capture on/off"""
+        """Toggle screenshot capture on/off
+
+        Two modes based on screenshot_interval setting:
+        - Interval = 0: Takes single screenshot and opens in MS Paint
+        - Interval > 0: Continuously captures screenshots at specified interval
+
+        Screenshots are saved to screenshots/ directory with timestamps.
+        """
         if self.screenshot_running:
             # Stop screenshot capture
             self.screenshot_running = False
@@ -1792,7 +2382,15 @@ class BotGUI:
             self.log("Screenshot capture started")
 
     def open_log_viewer(self):
-        """Open LogViewer.py with current device and session selected"""
+        """Open LogViewer.py with current device and session selected
+
+        Launches the LogViewer application in a separate process, automatically
+        selecting the current device and session (if debug mode is active).
+
+        Note:
+            - Requires debug mode to be enabled for session tracking
+            - Opens in separate window for viewing detailed logs with screenshots
+        """
         import subprocess
         import sys
 
@@ -1876,6 +2474,13 @@ class BotGUI:
     def _save_screenshot(self, andy, user, screenshot_dir):
         """Save a single screenshot with timestamp
 
+        Captures and saves a screenshot from the Android device to the screenshots directory.
+
+        Args:
+            andy: Android device instance
+            user: Username for filename prefix
+            screenshot_dir: Directory path where screenshots are saved
+
         Returns:
             str: Filepath of saved screenshot, or None if error occurred
         """
@@ -1904,11 +2509,27 @@ class BotGUI:
 # ============================================================================
 
 def run_bot_loop(gui):
-    """
-    Main bot execution loop with GUI integration
+    """Main bot execution loop with GUI integration
+
+    This is the core bot loop that runs continuously while the bot is active.
+    It executes enabled functions in sequence, handles shortcuts, manages cooldowns,
+    and processes remote commands.
+
+    Loop behavior:
+    1. Check and execute any pending shortcut triggers (highest priority)
+    2. Execute all enabled functions in sequence
+    3. Run Fix/Recover function if enabled
+    4. Update state manager heartbeat
+    5. Sleep for configured duration
+    6. Repeat
 
     Args:
-        gui: BotGUI instance
+        gui: BotGUI instance containing configuration and state
+
+    Note:
+        - Pressing Ctrl key during loop skips remaining functions for that iteration
+        - BotStoppedException is raised when user clicks Stop button
+        - Cooldowns prevent functions from running too frequently
     """
     global andy, bot, bot_running, gui_instance
 
@@ -1932,16 +2553,14 @@ def run_bot_loop(gui):
     # Function mapping
     function_map = {
         'doStreet': do_street,
-        'doArtists': do_artists,
         'doStudio': do_studio,
-        'doTour': do_tour,
         'doGroup': do_group,
         'doConcert': do_concert,
         'doHeal': do_heal,
         'doCoin': do_coin,
         'doHelp': do_help,
-        'spamHQ': do_spam_hq,
-        'doRally': do_rally
+        'doRally': do_rally,
+        'doParking': do_parking
     }
 
     # Functions that should be unchecked after completion
@@ -1952,15 +2571,13 @@ def run_bot_loop(gui):
     function_cooldowns = {
         'doGroup': 300,      # 5 minutes
         'doStreet': 0,       # No cooldown (disabled)
-        'doArtists': 0,      # No cooldown (disabled)
         'doStudio': 0,       # No cooldown (disabled)
-        'doTour': 0,         # No cooldown (disabled)
         'doConcert': 0,      # No cooldown (disabled)
         'doHeal': 0,         # No cooldown (disabled)
         'doCoin': 0,         # No cooldown (disabled)
         'doHelp': 0,         # No cooldown (disabled)
-        'spamHQ': 0,         # No cooldown (disabled)
         'doRally': 0,        # No cooldown (disabled)
+        'doParking': 0,      # No cooldown (disabled)
     }
 
     # Track last run time for each function (store in GUI instance)
@@ -2079,6 +2696,22 @@ def run_bot_loop(gui):
                 except Exception as e:
                     gui.log(f"ERROR in Fix/Recover: {e}")
 
+            # Update state manager heartbeat (shows bot is alive)
+            try:
+                gui.state_manager.heartbeat()
+            except Exception as e:
+                print(f"Error updating heartbeat: {e}")
+
+            # Capture and update screenshot for web interface monitoring
+            try:
+                screenshot = bot.screenshot()
+                gui.state_manager.update_screenshot(screenshot)
+            except Exception as e:
+                print(f"Error updating screenshot: {e}")
+
+            # Note: Remote command monitoring now runs in separate thread
+            # (see start_remote_monitoring method)
+
             # Sleep if configured
             if sleep_time > 0:
                 # Check if Control is held during sleep
@@ -2115,7 +2748,21 @@ def run_bot_loop(gui):
 # ============================================================================
 
 def main():
-    """Main function - launches the GUI"""
+    """Main entry point - launches the GUI and bot
+
+    Parses command line arguments, creates the GUI window, and auto-starts the bot.
+
+    Usage:
+        python ApexGirlBot.py <username>
+
+    Args:
+        username: Device username from config.json (passed as sys.argv[1])
+
+    Note:
+        - Bot auto-starts 100ms after GUI initialization
+        - GUI windows are positioned based on device order in config.json
+        - Each device gets its own independent GUI window
+    """
     global gui_root, gui_instance
 
     # Check for user argument
@@ -2134,7 +2781,7 @@ def main():
     gui.log(f"ApexGirl Bot started for user: {username}")
     gui.log("Auto-starting bot...")
 
-    # Auto-start the bot after GUI initializes
+    # Auto-start the bot after GUI initializes (100ms delay)
     gui_root.after(100, gui.toggle_bot)
 
     gui_root.mainloop()

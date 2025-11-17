@@ -159,6 +159,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2025-11-16
+
+### Added
+- **Web Interface** - Flask-based remote monitoring and control system
+  - Real-time bot state monitoring via web browser
+  - Remote control capabilities (checkbox toggle, settings adjustment)
+  - Screenshot viewing from all devices
+  - Multi-device support with "Apply to All" functionality
+  - Mobile-friendly responsive design
+  - Auto-refresh with configurable intervals (1-60 seconds)
+  - REST API for programmatic access
+  - SocketIO support for real-time updates
+  - Comprehensive documentation in web/README.md
+  - Multiple hosting options (local, background, Task Scheduler, ngrok, port forwarding)
+
+- **State Monitoring System** - Centralized multi-bot state tracking
+  - SQLite-based shared state database (state/state_monitor.db)
+  - Thread-safe operations with class-level locking
+  - Real-time state synchronization across bots
+  - Remote command queue system
+  - Heartbeat mechanism for bot alive detection
+  - Screenshot storage with JPEG compression
+  - Comprehensive API in state_manager.py
+  - Full documentation in STATE_MONITORING_README.md
+
+### Improved
+- **Documentation Enhancements** - Comprehensive code documentation overhaul
+  - Added 26+ detailed docstrings to ApexGirlBot.py functions
+  - Documented all hard-coded coordinates with inline comments
+  - Added OCR preprocessing pipeline explanations
+  - Enhanced function docstrings with Args, Returns, and Notes sections
+  - Documented control key override behavior
+  - Added coordinate comments for all tap/swipe operations
+  - Improved README.md with web interface section
+  - Updated feature list to include remote monitoring
+
+- **Code Quality** - Cleanup and optimization
+  - Removed unused discord.py dependency from requirements.txt
+  - Verified .gitignore properly excludes config.json
+  - Enhanced code comments throughout ApexGirlBot.py
+  - Improved maintainability with better function documentation
+
+### Changed
+- Updated version badges and references to 0.2.0
+- Enhanced README.md Table of Contents to include Web Interface section
+- Updated feature descriptions to highlight remote monitoring capabilities
+
+### Technical Details
+- Web server runs on Flask with CORS support
+- State database supports multiple concurrent bot instances
+- Screenshot data JPEG-compressed for performance
+- Remote commands processed via polling mechanism
+- Full backward compatibility with existing bots
+
+---
+
 ## [0.1.2] - 2025-01-27
 
 ### Added
@@ -269,6 +325,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **0.2.0** - 2025-11-16 - Web interface, state monitoring system, comprehensive documentation improvements
 - **0.1.3** - 2025-11-11 - Control key override, do_recover improvements, rally enhancements, botTemplate sync
 - **0.1.2** - 2025-01-27 - Debug logging system with LogViewer, do_group improvements, auto-connect on launch
 - **0.1.1** - 2025-01-24 - Code refactoring, Shortcuts system, do_street improvements

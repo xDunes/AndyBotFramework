@@ -10,6 +10,8 @@ Welcome! This guide will walk you through creating your first game automation bo
 5. [Working with Screenshots and Needles](#working-with-screenshots-and-needles)
 6. [Using Bot Functions](#using-bot-functions)
 7. [Advanced Features](#advanced-features)
+   - [Debug Logging with Database](#6-debug-logging-with-database)
+   - [Web Interface & Remote Monitoring](#7-web-interface--remote-monitoring-optional)
 8. [Troubleshooting](#troubleshooting)
 
 ---
@@ -1659,12 +1661,56 @@ Congratulations! You now know how to:
 - ✅ Configure cooldowns and auto-uncheck
 - ✅ Debug and troubleshoot
 
+### 7. Web Interface & Remote Monitoring (Optional)
+
+The framework includes a web interface for remote monitoring and control of your bots from any device on your network.
+
+#### What is it?
+- 🌐 **Web-based dashboard** - Monitor all running bots from a browser
+- 📱 **Mobile-friendly** - Control bots from your phone or tablet
+- 🔧 **Remote control** - Toggle checkboxes, adjust settings, view screenshots
+- 📊 **Multi-device** - Manage multiple bots from one interface
+
+#### Quick Setup
+
+1. **Install web dependencies:**
+   ```bash
+   pip install -r web/requirements.txt
+   ```
+
+2. **Start the web server:**
+   ```bash
+   python web/server.py
+   ```
+
+3. **Access from browser:**
+   - On same computer: http://localhost:5000
+   - From phone/tablet: http://YOUR_IP:5000
+
+#### Features
+- View real-time bot status (running/stopped)
+- See all function checkboxes and settings
+- View live screenshots from all devices
+- Click screenshots to send tap/swipe commands
+- Apply changes to one device or all devices at once
+- Auto-refresh with configurable intervals
+
+#### Learn More
+- **Quick Start:** See [web/QUICK_START.md](web/QUICK_START.md)
+- **Full Documentation:** See [web/README.md](web/README.md)
+- **Technical Details:** See [STATE_MONITORING_README.md](STATE_MONITORING_README.md)
+
+**Note:** This is completely optional! Your bot works fine without the web interface. It's just a convenient way to monitor multiple bots remotely.
+
+---
+
 ### To Learn More:
 
 1. **Study ApexGirlBot.py** - See real-world examples
 2. **Experiment** - Try different functions in your game
 3. **Read the code** - bot.py and android.py have more features
-4. **Join communities** - Learn from other bot developers (carefully!)
+4. **Try the web interface** - See web/QUICK_START.md for remote monitoring
+5. **Join communities** - Learn from other bot developers (carefully!)
 
 ### Your First Project:
 

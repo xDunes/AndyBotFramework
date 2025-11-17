@@ -29,7 +29,7 @@ class BOT:
     capabilities. Wraps Android device control with high-level automation methods.
 
     Attributes:
-        andy: Android device instance (friendly name for Android controller)
+        andy: Android device instance for device control
         needle: Dictionary of loaded needle images to find in screenshots (haystack)
         gui: Optional GUI instance for logging
         should_stop: Flag to signal immediate stop of bot operations
@@ -253,6 +253,171 @@ class BOT:
                 self.log(log_msg, screenshot=screenshot if debug_mode else None)
             return False
 
+    def find_all(self, needle_name, accuracy=0.9, screenshot=None, search_region=None, debug=False):
+        """Find all occurrences of needle image on screen
+
+        Uses OpenCV template matching to locate all instances of a needle image
+        in the screenshot (haystack) that meet the accuracy threshold.
+
+        Args:
+            needle_name: Name of the needle image to find (without path/extension)
+            accuracy: Match accuracy 0.0-1.0, higher is stricter (default: 0.9)
+            screenshot: Pre-captured screenshot, or None to capture new (default: None)
+            search_region: Optional tuple (x, y, w, h) to limit search area (default: None)
+            debug: Display annotated screenshot with detected needles (default: False)
+
+        Returns:
+            dict: Dictionary containing:
+                - 'count': Number of matches found
+                - 'coordinates': List of tuples (x, y, confidence) for each match,
+                                sorted by confidence (highest first)
+
+        Example:
+            # Find all instances of a button
+            result = bot.find_all('coin_icon')
+            print(f"Found {result['count']} coins")
+            for x, y, conf in result['coordinates']:
+                print(f"Coin at ({x}, {y}) with {conf*100:.1f}% confidence")
+
+            # Search only in a specific region
+            result = bot.find_all('enemy', search_region=(0, 0, 500, 500))
+            if result['count'] > 0:
+                print(f"Found {result['count']} enemies")
+
+            # Debug mode to visualize detections
+            result = bot.find_all('coin_icon', debug=True)
+        """
+        self.check_should_stop()
+
+        if screenshot is None:
+            screenshot = self.screenshot()
+
+        # Handle ROI (Region of Interest) for faster searching
+        search_area = screenshot
+        roi_offset_x, roi_offset_y = 0, 0
+
+        if search_region:
+            x, y, w, h = search_region
+            search_area = screenshot[y:y+h, x:x+w]
+            roi_offset_x, roi_offset_y = x, y
+
+        # Get needle dimensions
+        needle = self.get_needle(needle_name)
+        needle_h, needle_w = needle.shape[:2]
+
+        # Match needle using OpenCV template matching
+        result = cv.matchTemplate(search_area, needle, cv.TM_CCOEFF_NORMED)
+
+        # Find all locations where match exceeds accuracy threshold
+        locations = np.where(result >= accuracy)
+
+        # Combine x, y coordinates with their confidence values
+        all_matches = []
+        for pt_y, pt_x in zip(*locations):
+            confidence = result[pt_y, pt_x]
+            # Adjust coordinates for ROI offset
+            final_x = pt_x + roi_offset_x
+            final_y = pt_y + roi_offset_y
+            all_matches.append((final_x, final_y, confidence))
+
+        # Apply Non-Maximum Suppression to remove overlapping detections
+        # Group nearby matches (within needle dimensions) and keep only the highest confidence one
+        coordinates = []
+        if all_matches:
+            # Sort by confidence (highest first)
+            all_matches.sort(key=lambda m: m[2], reverse=True)
+
+            # Process each match, skipping those too close to already accepted matches
+            for x, y, conf in all_matches:
+                # Check if this match is too close to any already accepted match
+                is_duplicate = False
+                for accepted_x, accepted_y, _ in coordinates:
+                    # Calculate distance between matches
+                    distance = np.sqrt((x - accepted_x)**2 + (y - accepted_y)**2)
+
+                    # If distance is less than half the needle diagonal, consider it a duplicate
+                    # This ensures we don't count slightly shifted versions of the same match
+                    threshold_distance = np.sqrt(needle_w**2 + needle_h**2) / 2
+                    if distance < threshold_distance:
+                        is_duplicate = True
+                        break
+
+                # Only add if not a duplicate
+                if not is_duplicate:
+                    coordinates.append((x, y, conf))
+
+        # Create result dictionary
+        result_dict = {
+            'count': len(coordinates),
+            'coordinates': coordinates
+        }
+
+        # Log result
+        debug_mode = self.gui and hasattr(self.gui, 'debug') and self.gui.debug.get()
+        if debug_mode or not self.gui:
+            if result_dict['count'] > 0:
+                log_msg = f"FIND_ALL found {result_dict['count']} instances of {needle_name}"
+
+                # Create annotated screenshot in debug mode
+                annotated_screenshot = None
+                if debug_mode:
+                    annotated_screenshot = screenshot.copy()
+                    for x, y, _ in coordinates:
+                        # Draw rectangle around each found needle
+                        top_left = (x, y)
+                        bottom_right = (x + needle_w, y + needle_h)
+                        cv.rectangle(annotated_screenshot, top_left, bottom_right, (0, 255, 0, 255), 2)
+                        # Draw crosshair at center
+                        self._draw_crosshair(annotated_screenshot, x, y, (0, 255, 0, 255), size=15, thickness=2)
+
+                self.log(log_msg, screenshot=annotated_screenshot)
+            else:
+                log_msg = f"FIND_ALL found 0 instances of {needle_name}"
+                self.log(log_msg, screenshot=screenshot if debug_mode else None)
+
+        # Display debug visualization if requested
+        if debug:
+            debug_screenshot = screenshot.copy()
+
+            # Draw red rectangle around search region if specified
+            if search_region:
+                region_x, region_y, region_w, region_h = search_region
+                region_top_left = (region_x, region_y)
+                region_bottom_right = (region_x + region_w, region_y + region_h)
+                cv.rectangle(debug_screenshot, region_top_left, region_bottom_right, (0, 0, 255, 255), 3)
+
+                # Add label for search region
+                region_label = "Search Region"
+                cv.putText(debug_screenshot, region_label, (region_x, region_y - 10),
+                          cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255, 255), 2)
+
+            # Draw rectangles and crosshairs for all detected needles
+            for x, y, conf in coordinates:
+                # Draw green rectangle around each found needle
+                top_left = (x, y)
+                bottom_right = (x + needle_w, y + needle_h)
+                cv.rectangle(debug_screenshot, top_left, bottom_right, (0, 255, 0, 255), 3)
+
+                # Draw crosshair at center
+                self._draw_crosshair(debug_screenshot, x, y, (0, 255, 0, 255), size=20, thickness=3)
+
+                # Add confidence text above the rectangle
+                conf_text = f"{conf*100:.1f}%"
+                cv.putText(debug_screenshot, conf_text, (x, y - 10),
+                          cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0, 255), 2)
+
+            # Add summary text at the top
+            summary_text = f"Found {result_dict['count']} instances of '{needle_name}'"
+            cv.putText(debug_screenshot, summary_text, (10, 30),
+                      cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0, 255), 2)
+
+            # Display the annotated screenshot and wait for key press
+            cv.imshow(f"find_all Debug: {needle_name}", debug_screenshot)
+            cv.waitKey(0)  # Wait until user closes the window
+            cv.destroyAllWindows()
+
+        return result_dict
+
     def get_needle(self, needle_name):
         """Get loaded needle image by name
 
@@ -366,8 +531,31 @@ class BOT:
         Example:
             sc = bot.screenshot()
             color = bot.get_pixel_color(sc, 100, 100)
+
+        Note:
+            Automatically updates state manager with screenshot periodically
+            for remote monitoring (every 20th screenshot to avoid overhead)
         """
-        return self.andy.capture_screen()
+        sc = self.andy.capture_screen()
+
+        # Update state manager with screenshot periodically (every 20 screenshots)
+        # This allows remote monitoring without adding significant overhead
+        if self.gui and hasattr(self.gui, 'state_manager'):
+            if not hasattr(self, '_screenshot_update_counter'):
+                self._screenshot_update_counter = 0
+
+            self._screenshot_update_counter += 1
+
+            if self._screenshot_update_counter >= 20:  # Every 20th screenshot
+                self._screenshot_update_counter = 0
+                try:
+                    # Update in background to avoid blocking bot execution
+                    self.gui.state_manager.update_screenshot(sc)
+                except Exception:
+                    # Silently ignore errors to not break bot execution
+                    pass
+
+        return sc
 
     # ============================================================================
     # TEXT INPUT & KEYBOARD

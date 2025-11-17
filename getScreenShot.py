@@ -119,12 +119,9 @@ class ScreenshotCapture:
             logger.error(f"Failed to connect to device: {e}")
             return False
 
-    def capture(self, region: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
+    def capture(self) -> Optional[np.ndarray]:
         """
         Capture screenshot from the device.
-
-        Args:
-            region: Optional tuple of (x1, y1, x2, y2) to crop the screenshot
 
         Returns:
             Screenshot as numpy array, or None if capture failed
@@ -135,9 +132,6 @@ class ScreenshotCapture:
 
         try:
             logger.info("Capturing screenshot...")
-            if region:
-                # Note: Region cropping is deprecated - capture_screen() ignores crop parameters
-                logger.warning(f"Region parameter {region} is deprecated and will be ignored")
             screenshot = self.android.capture_screen()
             logger.info("Captured full screenshot")
             return screenshot

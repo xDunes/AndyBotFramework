@@ -51,7 +51,7 @@ class Android:
     Attributes:
         devices: List of available ADB devices
         device: Currently connected device instance
-        serialNumber: Target device serial number
+        serial_number: Target device serial number
         gui: Optional GUI instance for logging
     """
 
@@ -67,7 +67,7 @@ class Android:
         """
         self.devices = None
         self.device = None
-        self.serialNumber = serial
+        self.serial_number = serial
         self.gui = None
         self._initialize_connection()
 
@@ -102,7 +102,7 @@ class Android:
         """Initialize ADB connection and connect to target device
 
         Connects to local ADB server, discovers devices, and connects to
-        the device matching self.serialNumber. Exits if ADB server not
+        the device matching self.serial_number. Exits if ADB server not
         running or no devices attached. Retries connection until successful.
         """
         adb = Client(host='127.0.0.1', port=5037)
@@ -137,7 +137,7 @@ class Android:
                 dev_serial = dev.shell('getprop ro.boot.serialno')
                 self.log(f"Detected serial: {dev_serial.strip()}")
 
-                if self.serialNumber in dev_serial:
+                if self.serial_number in dev_serial:
                     self.log(f"Connected to device: {dev_serial.strip()}")
                     self.device = dev
                     return True
@@ -176,14 +176,6 @@ class Android:
         )
 
         return np_img
-
-    def get_screenshot(self):
-        """Alias for capture_screen()
-
-        Returns:
-            numpy.ndarray: Screenshot in BGRA format
-        """
-        return self.capture_screen()
 
     # ============================================================================
     # TOUCH INPUT & GESTURES
@@ -259,14 +251,6 @@ class Android:
         self.log(f'Text input: "{text}"')
         self.device.shell(f"input text '{text}'")
         self.press_enter()
-
-    def input_text(self, text):
-        """Alias for send_text()
-
-        Args:
-            text: Text string to input
-        """
-        self.send_text(text)
 
     @auto_reconnect
     def press_enter(self):
