@@ -124,7 +124,7 @@ pip install ppadb opencv-python numpy Pillow pytesseract keyboard
 
 ```bash
 git clone <repository-url>
-cd Apex-Girl
+cd AndyBotFramework
 ```
 
 ### 2. Install Python Dependencies
