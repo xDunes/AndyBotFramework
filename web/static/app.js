@@ -1,12 +1,18 @@
 // Bot Web Remote - Main Application
 
+// Theme handling - load theme before anything else to prevent flash
+(function() {
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+})();
+
 // Configuration
 let appConfig = null;
 
 // State
 let selectedDevice = null;
 let autoRefresh = true;
-let refreshInterval = 500; // milliseconds (500ms = 0.5s for near-live updates)
+let refreshInterval = 1000; // milliseconds (1s default - more stable for remote connections)
 let refreshTimer = null;
 let screenshotDisplaySize = null;
 let mouseDownPos = null;
@@ -24,12 +30,28 @@ let screenshotFPS = 5; // Default 5 FPS for live feed
 let previewScreenshots = {}; // Map of device_name -> screenshot data
 let selectedPreviews = new Set(); // Track selected preview devices
 
+// Screenshot timestamp tracking to prevent older images overwriting newer ones
+let currentScreenshotTimestamp = null; // Timestamp of currently displayed screenshot
+let previewScreenshotTimestamps = {}; // Map of device_name -> timestamp
+
+// Preview polling optimization - poll previews less frequently than main
+let previewRefreshCounter = 0;
+const PREVIEW_REFRESH_DIVISOR = 4; // Poll previews every 4th refresh cycle (4 seconds at 1000ms)
+
+// Refresh state - prevent overlapping refreshes
+let isRefreshing = false;
+let consecutiveErrors = 0;
+const MAX_CONSECUTIVE_ERRORS = 3;
+
 // Function checkboxes configuration - will be loaded from config
 let functionCheckboxes = [];
 
 // Initialize application
 async function init() {
     console.log('Bot Web Remote - Initializing...');
+
+    // Initialize theme dropdown to match saved theme
+    initializeTheme();
 
     // Load configuration first
     await loadConfig();
@@ -49,8 +71,8 @@ async function init() {
     // Create function checkboxes
     createFunctionCheckboxes();
 
-    // Create shortcuts
-    createShortcuts();
+    // Create commands
+    createCommands();
 
     // Create bot settings
     createBotSettings();
@@ -90,23 +112,40 @@ function initializeWebSocket() {
     });
 
     socket.on('screenshot_update', (data) => {
-        // Update main screenshot if this is the selected device
+        const timestamp = data.timestamp;
+
+        // Update main screenshot if this is the selected device (priority - always update)
         if (data.device_name === selectedDevice) {
-            updateScreenshotFromWebSocket(data.screenshot);
+            // Only update if this screenshot is newer than what we're displaying
+            if (!currentScreenshotTimestamp || timestamp > currentScreenshotTimestamp) {
+                currentScreenshotTimestamp = timestamp;
+                updateScreenshotFromWebSocket(data.screenshot);
+            }
         }
 
-        // Store screenshot for preview updates (if ALL mode is active)
-        previewScreenshots[data.device_name] = data.screenshot;
-
-        // Update preview if ALL mode is active and this device is in the preview list
-        if (isAllModeActive()) {
-            updatePreviewScreenshot(data.device_name, data.screenshot);
+        // Update preview only if preview data is included (server throttles this)
+        // Don't fall back to full screenshot - that defeats the bandwidth optimization
+        if (data.preview && isAllModeActive() && data.device_name !== selectedDevice) {
+            const prevTimestamp = previewScreenshotTimestamps[data.device_name];
+            if (!prevTimestamp || timestamp > prevTimestamp) {
+                previewScreenshotTimestamps[data.device_name] = timestamp;
+                previewScreenshots[data.device_name] = data.preview;
+                updatePreviewScreenshot(data.device_name, data.preview);
+            }
         }
     });
 
     socket.on('fps_updated', (data) => {
         console.log(`Screenshot FPS updated to: ${data.fps}`);
         screenshotFPS = data.fps;
+    });
+
+    // Listen for real-time log updates
+    socket.on('log_update', (data) => {
+        // Only update if this log is for the currently selected device
+        if (data.device_name === selectedDevice) {
+            appendLogEntry(data.entry);
+        }
     });
 }
 
@@ -211,40 +250,14 @@ async function loadConfig() {
 
             console.log('Loaded function layout from config:', functionCheckboxes);
         } else {
-            console.error('Failed to load config, using defaults');
-            // Fallback to default layout
+            console.error('Failed to load config - function layout will be empty');
             functionCheckboxes = [
-                { name: 'doStreet', label: 'Street' },
-                { name: 'doStudio', label: 'Studio' },
-                { name: 'doGroup', label: 'Group' },
-                { name: '_placeholder_0', label: '', isPlaceholder: true },
-                { name: 'doHelp', label: 'Help' },
-                { name: 'doCoin', label: 'Coin' },
-                { name: 'doHeal', label: 'Heal' },
-                { name: '_placeholder_1', label: '', isPlaceholder: true },
-                { name: 'doRally', label: 'Rally' },
-                { name: 'doConcert', label: 'Concert' },
-                { name: 'doParking', label: 'Parking' },
-                { name: '_placeholder_2', label: '', isPlaceholder: true },
                 { name: 'fix_enabled', label: 'Fix/Recover', isSetting: true }
             ];
         }
     } catch (error) {
         console.error('Error loading config:', error);
-        // Use default layout on error
         functionCheckboxes = [
-            { name: 'doStreet', label: 'Street' },
-            { name: 'doStudio', label: 'Studio' },
-            { name: 'doGroup', label: 'Group' },
-            { name: '_placeholder_0', label: '', isPlaceholder: true },
-            { name: 'doHelp', label: 'Help' },
-            { name: 'doCoin', label: 'Coin' },
-            { name: 'doHeal', label: 'Heal' },
-            { name: '_placeholder_1', label: '', isPlaceholder: true },
-            { name: 'doRally', label: 'Rally' },
-            { name: 'doConcert', label: 'Concert' },
-            { name: 'doParking', label: 'Parking' },
-            { name: '_placeholder_2', label: '', isPlaceholder: true },
             { name: 'fix_enabled', label: 'Fix/Recover', isSetting: true }
         ];
     }
@@ -325,9 +338,13 @@ function updatePreviewsVisibility() {
 
         // Only auto-select all previews when first activating ALL mode (not on every refresh)
         if (!wasVisible) {
-            const otherDevices = allBots.filter(bot => bot.device_name !== selectedDevice);
+            // Select all devices except the currently active one
             selectedPreviews.clear();
-            otherDevices.forEach(bot => selectedPreviews.add(bot.device_name));
+            allBots.forEach(bot => {
+                if (bot.device_name !== selectedDevice) {
+                    selectedPreviews.add(bot.device_name);
+                }
+            });
         }
 
         updatePreviewScreenshots();
@@ -343,17 +360,18 @@ function updatePreviewsVisibility() {
 }
 
 // Update all preview screenshots
-function updatePreviewScreenshots() {
+// Optional forceRefresh parameter to bypass the throttling (used when rebuilding)
+function updatePreviewScreenshots(forceRefresh = false) {
     const previewsContainer = document.getElementById('screenshotPreviews');
     if (!previewsContainer || !selectedDevice) return;
 
-    // Get list of other devices (exclude selected device)
-    const otherDevices = allBots.filter(bot => bot.device_name !== selectedDevice);
+    // Get ALL devices (include selected device for consistent positioning)
+    const allDevices = allBots;
 
     // Get existing preview items
     const existingPreviews = Array.from(previewsContainer.children);
     const existingDeviceNames = existingPreviews.map(item => item.dataset.deviceName);
-    const newDeviceNames = otherDevices.map(bot => bot.device_name);
+    const newDeviceNames = allDevices.map(bot => bot.device_name);
 
     // Check if the device list has changed
     const devicesChanged =
@@ -365,17 +383,66 @@ function updatePreviewScreenshots() {
         // Device list changed - rebuild previews
         previewsContainer.innerHTML = '';
 
-        otherDevices.forEach(bot => {
+        allDevices.forEach(bot => {
             const previewItem = createPreviewItem(bot.device_name);
             previewsContainer.appendChild(previewItem);
-            loadPreviewScreenshot(bot.device_name);
+            // Only load screenshot for non-selected devices
+            if (bot.device_name !== selectedDevice) {
+                loadPreviewScreenshot(bot.device_name);
+            }
         });
     } else {
-        // Device list unchanged - just update screenshots
-        otherDevices.forEach(bot => {
-            loadPreviewScreenshot(bot.device_name);
-        });
+        // Update selected state for all previews (positions stay the same)
+        updatePreviewSelectedStates();
+
+        if (forceRefresh) {
+            // Only fetch previews via HTTP when forced (throttled in refreshData)
+            // WebSocket updates handle real-time preview updates
+            allDevices.forEach(bot => {
+                // Only load screenshot for non-selected devices
+                if (bot.device_name !== selectedDevice) {
+                    loadPreviewScreenshot(bot.device_name);
+                }
+            });
+        }
     }
+    // When not forced and no device changes, rely on WebSocket for updates
+}
+
+// Update the selected/active state of all preview items
+function updatePreviewSelectedStates() {
+    allBots.forEach(bot => {
+        const previewItem = document.getElementById(`preview-${bot.device_name}`);
+        if (!previewItem) return;
+
+        const canvas = previewItem.querySelector('.screenshot-preview-canvas');
+        const placeholder = previewItem.querySelector('.screenshot-preview-placeholder');
+
+        if (bot.device_name === selectedDevice) {
+            // Currently selected device - show as active/blank
+            previewItem.classList.add('active-device');
+            previewItem.classList.remove('selected');
+            if (canvas) canvas.style.display = 'none';
+            if (placeholder) {
+                placeholder.textContent = 'Active';
+                placeholder.style.display = 'block';
+            }
+        } else {
+            // Other devices - show screenshot
+            previewItem.classList.remove('active-device');
+            // Update selected state based on selectedPreviews set
+            if (selectedPreviews.has(bot.device_name)) {
+                previewItem.classList.add('selected');
+            } else {
+                previewItem.classList.remove('selected');
+            }
+            // Restore screenshot if we have cached data
+            if (previewScreenshots[bot.device_name]) {
+                if (canvas) canvas.style.display = 'block';
+                if (placeholder) placeholder.style.display = 'none';
+            }
+        }
+    });
 }
 
 // Create a preview item element
@@ -390,6 +457,12 @@ function createPreviewItem(deviceName) {
         previewItem.classList.add('selected');
     }
 
+    // Check if this is the currently active/selected device
+    const isActiveDevice = deviceName === selectedDevice;
+    if (isActiveDevice) {
+        previewItem.classList.add('active-device');
+    }
+
     // Add label
     const label = document.createElement('div');
     label.className = 'screenshot-preview-label';
@@ -400,12 +473,16 @@ function createPreviewItem(deviceName) {
     const canvas = document.createElement('canvas');
     canvas.className = 'screenshot-preview-canvas';
     canvas.id = `preview-canvas-${deviceName}`;
+    // Hide canvas for active device
+    if (isActiveDevice) {
+        canvas.style.display = 'none';
+    }
     previewItem.appendChild(canvas);
 
     // Add placeholder
     const placeholder = document.createElement('div');
     placeholder.className = 'screenshot-preview-placeholder';
-    placeholder.textContent = 'Loading...';
+    placeholder.textContent = isActiveDevice ? 'Active' : 'Loading...';
     placeholder.style.display = 'block';
     previewItem.appendChild(placeholder);
 
@@ -427,6 +504,9 @@ function createPreviewItem(deviceName) {
 
 // Toggle preview selection
 function togglePreviewSelection(deviceName) {
+    // Don't allow toggling the active device
+    if (deviceName === selectedDevice) return;
+
     const previewItem = document.getElementById(`preview-${deviceName}`);
     if (!previewItem) return;
 
@@ -446,10 +526,23 @@ function togglePreviewSelection(deviceName) {
 // Load screenshot for a preview device
 async function loadPreviewScreenshot(deviceName) {
     try {
-        const response = await fetch(`/api/bots/${deviceName}/screenshot`);
+        // Use size=preview for smaller, compressed thumbnails (85x150 JPEG)
+        const response = await fetch(`/api/bots/${deviceName}/screenshot?size=preview`);
         const data = await response.json();
 
         if (data.success && data.screenshot) {
+            const timestamp = data.timestamp;
+
+            // Only update if this screenshot is newer than what we have
+            const prevTimestamp = previewScreenshotTimestamps[deviceName];
+            if (prevTimestamp && timestamp && timestamp <= prevTimestamp) {
+                // Skip - we already have a newer screenshot
+                return;
+            }
+
+            if (timestamp) {
+                previewScreenshotTimestamps[deviceName] = timestamp;
+            }
             previewScreenshots[deviceName] = data.screenshot;
             updatePreviewScreenshot(deviceName, data.screenshot);
         }
@@ -546,24 +639,24 @@ function setupEventListeners() {
     });
 }
 
-// Create shortcuts dynamically from config
-function createShortcuts() {
-    const container = document.getElementById('shortcutsGrid');
-    if (!container || !appConfig || !appConfig.shortcuts) return;
+// Create commands dynamically from config
+function createCommands() {
+    const container = document.getElementById('commandsGrid');
+    if (!container || !appConfig || !appConfig.commands) return;
 
     container.innerHTML = ''; // Clear existing
 
-    appConfig.shortcuts.forEach(shortcut => {
-        const button = document.createElement('button');
-        button.className = 'btn shortcut-btn';
-        button.textContent = shortcut.label;
-
-        // Handle start_stop button specially - it needs the ID
-        if (shortcut.id === 'start_stop') {
-            button.id = 'startStopBtn';
+    appConfig.commands.forEach(command => {
+        // Skip start_stop - it's now in the Bot section
+        if (command.id === 'start_stop') {
+            return;
         }
 
-        button.onclick = () => sendShortcut(shortcut.id);
+        const button = document.createElement('button');
+        button.className = 'btn btn-sm command-btn';
+        button.textContent = command.label;
+
+        button.onclick = () => sendCommand(command.id);
         container.appendChild(button);
     });
 }
@@ -698,12 +791,49 @@ function formatElapsedTime(seconds) {
     }
 }
 
+// Helper function to fetch with timeout
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        return response;
+    } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+    }
+}
+
 // Refresh all data
 async function refreshData() {
+    // Prevent overlapping refreshes
+    if (isRefreshing) {
+        return;
+    }
+    isRefreshing = true;
+
     try {
-        // Fetch stats
-        const statsResponse = await fetch('/api/stats');
-        const statsData = await statsResponse.json();
+        // Increment preview refresh counter
+        previewRefreshCounter++;
+
+        // Fetch stats and bots in parallel with timeout
+        const [statsResponse, botsResponse] = await Promise.all([
+            fetchWithTimeout('/api/stats', {}, 8000),
+            fetchWithTimeout('/api/bots', {}, 8000)
+        ]);
+
+        const [statsData, botsData] = await Promise.all([
+            statsResponse.json(),
+            botsResponse.json()
+        ]);
+
+        // Reset error counter on success
+        consecutiveErrors = 0;
 
         if (statsData.success) {
             updateStats(statsData.stats);
@@ -711,12 +841,11 @@ async function refreshData() {
             console.error('Stats API error:', statsData.error);
         }
 
-        // Fetch all bots
-        const botsResponse = await fetch('/api/bots');
-        const botsData = await botsResponse.json();
-
         if (botsData.success) {
             updateDeviceList(botsData.bots);
+
+            // Update function tooltips with device info
+            updateFunctionTooltips();
 
             // Auto-select first device if none selected
             if (!selectedDevice && botsData.bots.length > 0) {
@@ -724,18 +853,28 @@ async function refreshData() {
             }
         } else {
             console.error('Bots API error:', botsData.error);
-            const deviceList = document.getElementById('deviceList');
-            deviceList.innerHTML = `<div class="loading" style="color: red;">Error: ${botsData.error}</div>`;
         }
 
         // Refresh selected device details
         if (selectedDevice) {
-            await refreshDeviceDetails();
+            // Determine if we should force refresh previews this cycle
+            // Previews are polled less frequently to save bandwidth
+            const shouldRefreshPreviews = (previewRefreshCounter % PREVIEW_REFRESH_DIVISOR) === 0;
+            await refreshDeviceDetails(shouldRefreshPreviews);
         }
     } catch (error) {
-        console.error('Error refreshing data:', error);
-        const deviceList = document.getElementById('deviceList');
-        deviceList.innerHTML = `<div class="loading" style="color: red;">Connection error: ${error.message}</div>`;
+        consecutiveErrors++;
+        console.error(`Error refreshing data (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, error.message);
+
+        // Only show error in UI after multiple consecutive failures
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            const deviceList = document.getElementById('deviceList');
+            if (deviceList && allBots.length === 0) {
+                deviceList.innerHTML = `<div class="loading" style="color: orange;">Connection unstable - retrying...</div>`;
+            }
+        }
+    } finally {
+        isRefreshing = false;
     }
 }
 
@@ -833,7 +972,7 @@ function updateDeviceList(bots) {
             deviceItem.className = newClassName;
         }
 
-        // Update status text only if changed (just time, status shown by color)
+        // Update status text - just show elapsed time
         const deviceStatus = deviceItem.querySelector('.device-status');
         const timeStr = bot.elapsed_seconds !== null ? formatElapsedTime(bot.elapsed_seconds) : '?';
         if (deviceStatus.textContent !== timeStr) {
@@ -845,18 +984,45 @@ function updateDeviceList(bots) {
 // Select a device
 function selectDevice(deviceName) {
     selectedDevice = deviceName;
-    updateCurrentDeviceDisplay();
-    refreshDeviceDetails();
+    // Reset timestamp when switching devices so we accept the first screenshot
+    currentScreenshotTimestamp = null;
 
-    // If ALL mode is active, auto-select all remaining devices (except the new active device)
+    // Immediately update visual selection (don't wait for next refresh cycle)
+    const deviceList = document.getElementById('deviceList');
+    if (deviceList) {
+        Array.from(deviceList.children).forEach(item => {
+            const nameEl = item.querySelector('.device-name');
+            if (nameEl) {
+                if (nameEl.textContent === deviceName) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            }
+        });
+    }
+
+    updateCurrentDeviceDisplay();
+
+    // If ALL mode is active, update preview states (keep positions, just update active indicator)
     if (isAllModeActive()) {
-        const otherDevices = allBots.filter(bot => bot.device_name !== selectedDevice);
-        selectedPreviews.clear();
-        otherDevices.forEach(bot => selectedPreviews.add(bot.device_name));
-        console.log(`Active device changed to ${deviceName}. Auto-selected ${selectedPreviews.size} preview devices.`);
+        // Remove selected device from selectedPreviews, add it back to others
+        selectedPreviews.delete(deviceName);
+        // Add all other devices that aren't already selected
+        allBots.forEach(bot => {
+            if (bot.device_name !== deviceName && !selectedPreviews.has(bot.device_name)) {
+                selectedPreviews.add(bot.device_name);
+            }
+        });
+        console.log(`Active device changed to ${deviceName}. Selected count: ${selectedPreviews.size}`);
+        // Update visual states without rebuilding
+        updatePreviewSelectedStates();
     }
 
     updatePreviewsVisibility();
+
+    // Fetch device details async (don't block selection)
+    refreshDeviceDetails();
 }
 
 // Update current device display in header
@@ -864,17 +1030,15 @@ function updateCurrentDeviceDisplay() {
     const currentDeviceNameEl = document.getElementById('currentDeviceName');
     const statusIndicator = document.getElementById('statusIndicator');
 
-    if (!selectedDevice) {
-        currentDeviceNameEl.textContent = 'No device selected';
-        statusIndicator.className = 'status-indicator';
-        return;
-    }
-
-    currentDeviceNameEl.textContent = selectedDevice;
-
     // Find the bot in allBots to get its status
     const bot = allBots.find(b => b.device_name === selectedDevice);
     if (bot) {
+        // Show device name with LD/Bot status indicators
+        const ldIndicator = bot.ld_running ? '🟢' : '🔴';
+        const botIndicator = bot.is_running ? '🟢' : '🔴';
+        currentDeviceNameEl.innerHTML = `${selectedDevice} <span style="font-size: 0.8em;">LD${ldIndicator} Bot${botIndicator}</span>`;
+
+        // Main status indicator shows bot running state (for backward compatibility)
         statusIndicator.className = 'status-indicator';
         if (bot.is_running) {
             if (bot.elapsed_seconds && bot.elapsed_seconds > 30) {
@@ -885,18 +1049,17 @@ function updateCurrentDeviceDisplay() {
         } else {
             statusIndicator.classList.add('stopped');
         }
+    } else {
+        currentDeviceNameEl.textContent = selectedDevice || 'Loading...';
     }
 }
 
 // Refresh device details
-async function refreshDeviceDetails() {
+// refreshPreviews: if true, also refresh preview screenshots via HTTP (throttled)
+async function refreshDeviceDetails(refreshPreviews = false) {
     if (!selectedDevice) return;
 
     try {
-        // Show device content
-        document.getElementById('deviceDetails').querySelector('.no-selection').style.display = 'none';
-        document.getElementById('deviceContent').style.display = 'grid';
-
         // Fetch device state
         const response = await fetch(`/api/bots/${selectedDevice}`);
         const data = await response.json();
@@ -914,11 +1077,21 @@ async function refreshDeviceDetails() {
         // Update control panel
         updateControlPanel(state);
 
-        // Update log
-        updateLog(state.current_log);
+        // Log updates are now handled via WebSocket in real-time
+        // Only use REST API log on initial load (when log is empty/placeholder)
+        const logElement = document.getElementById('logText');
+        if (logElement && (logElement.textContent === 'No log entries' || logElement.textContent === '')) {
+            updateLog(state.current_log);
+        }
 
-        // Update screenshot
+        // Update main screenshot (always at full rate)
         await updateScreenshot();
+
+        // Update preview screenshots only when requested (throttled)
+        // WebSocket handles real-time updates; HTTP polling is a fallback
+        if (refreshPreviews && isAllModeActive()) {
+            updatePreviewScreenshots(true);
+        }
 
     } catch (error) {
         console.error('Error refreshing device details:', error);
@@ -929,7 +1102,8 @@ async function refreshDeviceDetails() {
 function updateStatusInfo(state) {
     const headerStatusInfo = document.getElementById('headerStatusInfo');
 
-    const status = state.is_running ? 'RUNNING' : 'STOPPED';
+    const ldStatus = state.ld_running ? '<span style="color: green;">Running</span>' : '<span style="color: red;">Stopped</span>';
+    const botStatus = state.is_running ? '<span style="color: green;">Running</span>' : '<span style="color: red;">Stopped</span>';
     const startTime = state.start_time;
     const lastUpdate = state.last_update;
     const endTime = state.end_time || 'N/A';
@@ -937,7 +1111,8 @@ function updateStatusInfo(state) {
 
     headerStatusInfo.innerHTML = `
         <strong>Device:</strong> ${state.device_name}<br>
-        <strong>Status:</strong> ${status}<br>
+        <strong>LDPlayer:</strong> ${ldStatus}<br>
+        <strong>Bot:</strong> ${botStatus}<br>
         <strong>Started:</strong> ${startTime}<br>
         <strong>Last Update:</strong> ${lastUpdate}<br>
         <strong>Stopped:</strong> ${endTime}<br>
@@ -978,23 +1153,79 @@ function updateControlPanel(state) {
         });
     }
 
-    // Update debug checkbox
+    // Update debug checkboxes (both in Settings and Bot section)
     const debugElement = document.getElementById('debugEnabled');
     if (debugElement) {
         debugElement.checked = Boolean(state.debug_enabled);
     }
+    const botDebugElement = document.getElementById('botDebugEnabled');
+    if (botDebugElement) {
+        botDebugElement.checked = Boolean(state.debug_enabled);
+    }
 
-    // Update Start/Stop button text
-    const startStopBtn = document.getElementById('startStopBtn');
-    if (startStopBtn) {
-        startStopBtn.textContent = state.is_running ? 'Stop' : 'Start';
+}
+
+// Update function checkbox tooltips to show which devices have each function enabled
+function updateFunctionTooltips() {
+    if (!appConfig || !appConfig.function_layout) return;
+
+    appConfig.function_layout.forEach(rowFunctions => {
+        rowFunctions.forEach(funcName => {
+            const label = document.querySelector(`label[for="${funcName}"]`) ||
+                          document.querySelector(`label:has(#${funcName})`);
+            if (!label) return;
+
+            // Find all devices that have this function enabled
+            const enabledDevices = allBots
+                .filter(bot => bot[funcName] === 1 || bot[funcName] === true)
+                .map(bot => bot.device_name);
+
+            if (enabledDevices.length > 0) {
+                label.title = `Enabled on: ${enabledDevices.join(', ')}`;
+            } else {
+                label.title = 'Not enabled on any device';
+            }
+        });
+    });
+}
+
+// Update log (full replacement from API)
+function updateLog(logText) {
+    const logElement = document.getElementById('logText');
+    const logContainer = document.getElementById('logContainer');
+    logElement.textContent = logText || 'No log entries';
+    // Auto-scroll to bottom (scroll the container, not the pre element)
+    if (logContainer) {
+        logContainer.scrollTop = logContainer.scrollHeight;
     }
 }
 
-// Update log
-function updateLog(logText) {
+// Append a single log entry (from WebSocket)
+function appendLogEntry(entry) {
     const logElement = document.getElementById('logText');
-    logElement.textContent = logText || 'No log entries';
+    const logContainer = document.getElementById('logContainer');
+    if (!logElement) return;
+
+    const MAX_LOG_LINES = 100;
+
+    // If log is empty or just placeholder, replace it
+    if (logElement.textContent === 'No log entries' || logElement.textContent === '') {
+        logElement.textContent = entry;
+    } else {
+        // Append new entry
+        logElement.textContent += '\n' + entry;
+
+        // Trim old lines if exceeding max
+        const lines = logElement.textContent.split('\n');
+        if (lines.length > MAX_LOG_LINES) {
+            logElement.textContent = lines.slice(-MAX_LOG_LINES).join('\n');
+        }
+    }
+
+    // Auto-scroll to bottom (scroll the container, not the pre element)
+    if (logContainer) {
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
 }
 
 // Update screenshot
@@ -1010,6 +1241,20 @@ async function updateScreenshot() {
         const placeholder = container.querySelector('.screenshot-placeholder');
 
         if (data.success && data.screenshot) {
+            const timestamp = data.timestamp;
+
+            // Only update if this screenshot is newer than what we're displaying
+            // This prevents older HTTP responses from overwriting newer WebSocket updates
+            if (currentScreenshotTimestamp && timestamp && timestamp <= currentScreenshotTimestamp) {
+                // Skip this update - we already have a newer screenshot
+                return;
+            }
+
+            // Update the timestamp tracker
+            if (timestamp) {
+                currentScreenshotTimestamp = timestamp;
+            }
+
             const img = new Image();
             img.onload = () => {
                 // Calculate display size (maintain 540:960 aspect ratio)
@@ -1063,7 +1308,8 @@ function setupScreenshotCanvas() {
         const rect = canvas.getBoundingClientRect();
         mouseDownPos = {
             x: e.clientX - rect.left,
-            y: e.clientY - rect.top
+            y: e.clientY - rect.top,
+            timestamp: Date.now()
         };
     });
 
@@ -1073,7 +1319,8 @@ function setupScreenshotCanvas() {
         const rect = canvas.getBoundingClientRect();
         const mouseUpPos = {
             x: e.clientX - rect.left,
-            y: e.clientY - rect.top
+            y: e.clientY - rect.top,
+            timestamp: Date.now()
         };
 
         handleScreenshotInteraction(mouseDownPos, mouseUpPos);
@@ -1087,7 +1334,8 @@ function setupScreenshotCanvas() {
         const touch = e.touches[0];
         mouseDownPos = {
             x: touch.clientX - rect.left,
-            y: touch.clientY - rect.top
+            y: touch.clientY - rect.top,
+            timestamp: Date.now()
         };
     });
 
@@ -1099,7 +1347,8 @@ function setupScreenshotCanvas() {
         const touch = e.changedTouches[0];
         const mouseUpPos = {
             x: touch.clientX - rect.left,
-            y: touch.clientY - rect.top
+            y: touch.clientY - rect.top,
+            timestamp: Date.now()
         };
 
         handleScreenshotInteraction(mouseDownPos, mouseUpPos);
@@ -1135,13 +1384,16 @@ function handleScreenshotInteraction(downPos, upPos) {
         Math.pow(clampedReleaseY - clampedPressY, 2)
     );
 
-    console.log(`Screenshot interaction: (${clampedPressX}, ${clampedPressY}) -> (${clampedReleaseX}, ${clampedReleaseY}), distance: ${distance}`);
+    // Calculate duration (time between press and release)
+    const duration = upPos.timestamp - downPos.timestamp;
+
+    console.log(`Screenshot interaction: (${clampedPressX}, ${clampedPressY}) -> (${clampedReleaseX}, ${clampedReleaseY}), distance: ${distance}, duration: ${duration}ms`);
 
     // Determine tap vs swipe (threshold: 10 pixels)
     if (distance < 10) {
         sendTapCommand(clampedPressX, clampedPressY);
     } else {
-        sendSwipeCommand(clampedPressX, clampedPressY, clampedReleaseX, clampedReleaseY);
+        sendSwipeCommand(clampedPressX, clampedPressY, clampedReleaseX, clampedReleaseY, duration);
     }
 }
 
@@ -1171,18 +1423,20 @@ function getTargetDevices() {
         // Only current device
         return selectedDevice ? [selectedDevice] : [];
     } else {
-        // ALL mode - return current device + selected preview devices
-        const targets = [];
+        // ALL mode - return selected device + selected previews
+        const targets = new Set();
+
+        // Always include the main selected device
         if (selectedDevice) {
-            targets.push(selectedDevice);
+            targets.add(selectedDevice);
         }
-        selectedPreviews.forEach(deviceName => {
-            if (deviceName !== selectedDevice) {
-                targets.push(deviceName);
-            }
-        });
-        console.log(`Target devices (ALL mode): ${targets.join(', ')} (${targets.length} total)`);
-        return targets;
+
+        // Add all selected preview devices
+        selectedPreviews.forEach(device => targets.add(device));
+
+        const targetArray = Array.from(targets);
+        console.log(`Target devices (ALL mode): ${targetArray.join(', ')} (${targetArray.length} total)`);
+        return targetArray;
     }
 }
 
@@ -1195,35 +1449,75 @@ async function sendCheckboxCommand(checkboxName) {
 
     if (targetDevices.length === 0) return;
 
-    try {
-        // Send command to each target device
-        const promises = targetDevices.map(deviceName =>
-            fetch('/api/command/checkbox', {
+    let successCount = 0;
+
+    // Execute sequentially to ensure all commands are processed reliably
+    for (const deviceName of targetDevices) {
+        try {
+            const response = await fetchWithTimeout('/api/command/checkbox', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                     device_name: deviceName,
-                    apply_mode: 'current', // Always use 'current' since we're targeting specific devices
+                    apply_mode: 'current',
                     name: checkboxName,
                     enabled: enabled
                 })
-            })
-        );
-
-        const responses = await Promise.all(promises);
-        const results = await Promise.all(responses.map(r => r.json()));
-
-        const successCount = results.filter(r => r.success).length;
-        console.log(`Checkbox command sent to ${successCount}/${targetDevices.length} devices: ${checkboxName} = ${enabled}`);
-
-        if (successCount < targetDevices.length) {
-            console.error('Some checkbox commands failed');
+            }, 5000);
+            const result = await response.json();
+            if (result.success) successCount++;
+        } catch (err) {
+            console.error(`Checkbox command failed for ${deviceName}:`, err.message);
         }
-    } catch (error) {
-        console.error('Error sending checkbox command:', error);
     }
+
+    console.log(`Checkbox command sent to ${successCount}/${targetDevices.length} devices: ${checkboxName} = ${enabled}`);
+
+    if (successCount < targetDevices.length) {
+        console.error('Some checkbox commands failed');
+    }
+}
+
+// Send debug setting command (handles both Debug checkboxes and syncs them)
+async function sendDebugSetting(checkbox) {
+    if (!selectedDevice) return;
+
+    const value = checkbox.checked;
+
+    // Sync both debug checkboxes
+    const debugEnabled = document.getElementById('debugEnabled');
+    const botDebugEnabled = document.getElementById('botDebugEnabled');
+    if (debugEnabled) debugEnabled.checked = value;
+    if (botDebugEnabled) botDebugEnabled.checked = value;
+
+    const targetDevices = getTargetDevices();
+    if (targetDevices.length === 0) return;
+
+    let successCount = 0;
+
+    // Execute sequentially to ensure all commands are processed reliably
+    for (const deviceName of targetDevices) {
+        try {
+            const response = await fetch('/api/command/setting', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    device_name: deviceName,
+                    apply_mode: 'current',
+                    name: 'debug_enabled',
+                    value: value
+                })
+            });
+            const result = await response.json();
+            if (result.success) successCount++;
+        } catch (err) {
+            console.error(`Debug setting failed for ${deviceName}:`, err.message);
+        }
+    }
+
+    console.log(`Debug setting sent to ${successCount}/${targetDevices.length} devices: debug_enabled = ${value}`);
 }
 
 // Send setting command
@@ -1233,8 +1527,8 @@ async function sendSetting(settingName) {
     let value;
 
     // Check if this is a boolean setting (checkbox)
-    if (settingName === 'fix_enabled' || settingName === 'debug_enabled') {
-        const element = document.getElementById(settingName === 'debug_enabled' ? 'debugEnabled' : 'fix_enabled');
+    if (settingName === 'fix_enabled') {
+        const element = document.getElementById('fix_enabled');
         if (element) {
             value = element.checked;
         } else {
@@ -1259,34 +1553,34 @@ async function sendSetting(settingName) {
 
     if (targetDevices.length === 0) return;
 
-    try {
-        // Send command to each target device
-        const promises = targetDevices.map(deviceName =>
-            fetch('/api/command/setting', {
+    let successCount = 0;
+
+    // Execute sequentially to ensure all commands are processed reliably
+    for (const deviceName of targetDevices) {
+        try {
+            const response = await fetch('/api/command/setting', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                     device_name: deviceName,
-                    apply_mode: 'current', // Always use 'current' since we're targeting specific devices
+                    apply_mode: 'current',
                     name: settingName,
                     value: value
                 })
-            })
-        );
-
-        const responses = await Promise.all(promises);
-        const results = await Promise.all(responses.map(r => r.json()));
-
-        const successCount = results.filter(r => r.success).length;
-        console.log(`Setting command sent to ${successCount}/${targetDevices.length} devices: ${settingName} = ${value}`);
-
-        if (successCount < targetDevices.length) {
-            console.error('Some setting commands failed');
+            });
+            const result = await response.json();
+            if (result.success) successCount++;
+        } catch (err) {
+            console.error(`Setting command failed for ${deviceName}:`, err.message);
         }
-    } catch (error) {
-        console.error('Error sending setting command:', error);
+    }
+
+    console.log(`Setting command sent to ${successCount}/${targetDevices.length} devices: ${settingName} = ${value}`);
+
+    if (successCount < targetDevices.length) {
+        console.error('Some setting commands failed');
     }
 }
 
@@ -1298,114 +1592,205 @@ async function sendTapCommand(x, y) {
 
     if (targetDevices.length === 0) return;
 
-    try {
-        // Send command to each target device
-        const promises = targetDevices.map(deviceName =>
-            fetch('/api/command/tap', {
+    let successCount = 0;
+
+    // Execute sequentially to ensure all commands are processed reliably
+    for (const deviceName of targetDevices) {
+        try {
+            const response = await fetchWithTimeout('/api/command/tap', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                     device_name: deviceName,
-                    apply_mode: 'current', // Always use 'current' since we're targeting specific devices
+                    apply_mode: 'current',
                     x: x,
                     y: y
                 })
-            })
-        );
-
-        const responses = await Promise.all(promises);
-        const results = await Promise.all(responses.map(r => r.json()));
-
-        const successCount = results.filter(r => r.success).length;
-        console.log(`Tap command sent to ${successCount}/${targetDevices.length} devices: (${x}, ${y})`);
-
-        if (successCount < targetDevices.length) {
-            console.error('Some tap commands failed');
+            }, 5000);
+            const result = await response.json();
+            if (result.success) successCount++;
+        } catch (err) {
+            console.error(`Tap command failed for ${deviceName}:`, err.message);
         }
-    } catch (error) {
-        console.error('Error sending tap command:', error);
+    }
+
+    console.log(`Tap command sent to ${successCount}/${targetDevices.length} devices: (${x}, ${y})`);
+
+    if (successCount < targetDevices.length) {
+        console.error('Some tap commands failed');
     }
 }
 
 // Send swipe command
-async function sendSwipeCommand(x1, y1, x2, y2) {
+async function sendSwipeCommand(x1, y1, x2, y2, duration) {
     if (!selectedDevice) return;
 
     const targetDevices = getTargetDevices();
 
     if (targetDevices.length === 0) return;
 
-    try {
-        // Send command to each target device
-        const promises = targetDevices.map(deviceName =>
-            fetch('/api/command/swipe', {
+    // Ensure duration is at least 100ms for reliable swipes
+    const swipeDuration = Math.max(100, duration || 500);
+
+    let successCount = 0;
+
+    // Execute sequentially to ensure all commands are processed reliably
+    for (const deviceName of targetDevices) {
+        try {
+            const response = await fetchWithTimeout('/api/command/swipe', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                     device_name: deviceName,
-                    apply_mode: 'current', // Always use 'current' since we're targeting specific devices
+                    apply_mode: 'current',
                     x1: x1,
                     y1: y1,
                     x2: x2,
-                    y2: y2
+                    y2: y2,
+                    duration: swipeDuration
                 })
-            })
-        );
-
-        const responses = await Promise.all(promises);
-        const results = await Promise.all(responses.map(r => r.json()));
-
-        const successCount = results.filter(r => r.success).length;
-        console.log(`Swipe command sent to ${successCount}/${targetDevices.length} devices: (${x1}, ${y1}) -> (${x2}, ${y2})`);
-
-        if (successCount < targetDevices.length) {
-            console.error('Some swipe commands failed');
+            }, 5000);
+            const result = await response.json();
+            if (result.success) successCount++;
+        } catch (err) {
+            console.error(`Swipe command failed for ${deviceName}:`, err.message);
         }
-    } catch (error) {
-        console.error('Error sending swipe command:', error);
+    }
+
+    console.log(`Swipe command sent to ${successCount}/${targetDevices.length} devices: (${x1}, ${y1}) -> (${x2}, ${y2}), duration: ${swipeDuration}ms`);
+
+    if (successCount < targetDevices.length) {
+        console.error('Some swipe commands failed');
     }
 }
 
-// Send shortcut command
-async function sendShortcut(shortcutName) {
+// Helper function to delay execution
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Send bot command (start/stop)
+async function sendBotCommand(action) {
     if (!selectedDevice) return;
 
     const targetDevices = getTargetDevices();
 
     if (targetDevices.length === 0) return;
 
-    try {
-        // Send command to each target device
-        const promises = targetDevices.map(deviceName =>
-            fetch('/api/command/shortcut', {
+    // Confirm if ALL mode is active
+    if (isAllModeActive() && targetDevices.length > 1) {
+        const confirmed = confirm(`Are you sure you want to ${action.toUpperCase()} the bot on ALL ${targetDevices.length} devices?`);
+        if (!confirmed) return;
+    }
+
+    let successCount = 0;
+
+    // Execute sequentially to ensure all commands are processed reliably
+    for (const deviceName of targetDevices) {
+        try {
+            const response = await fetch('/api/command/bot', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                     device_name: deviceName,
-                    apply_mode: 'current', // Always use 'current' since we're targeting specific devices
-                    shortcut: shortcutName
+                    action: action
                 })
+            });
+            const result = await response.json();
+            if (result.success) successCount++;
+        } catch (err) {
+            console.error(`Bot ${action} command failed for ${deviceName}:`, err.message);
+        }
+    }
+
+    console.log(`Bot ${action} command sent to ${successCount}/${targetDevices.length} devices`);
+
+    if (successCount < targetDevices.length) {
+        console.error('Some bot commands failed');
+    }
+
+    // Refresh device state after a short delay to allow bot to process command
+    setTimeout(() => {
+        refreshDeviceDetails();
+    }, 1000);
+}
+
+// Take screenshot and open in MS Paint on server
+async function sendScreenshotCommand() {
+    if (!selectedDevice) return;
+
+    try {
+        const response = await fetch('/api/command/screenshot', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                device_name: selectedDevice
             })
-        );
+        });
 
-        const responses = await Promise.all(promises);
-        const results = await Promise.all(responses.map(r => r.json()));
-
-        const successCount = results.filter(r => r.success).length;
-        console.log(`Shortcut command sent to ${successCount}/${targetDevices.length} devices: ${shortcutName}`);
-
-        if (successCount < targetDevices.length) {
-            console.error('Some shortcut commands failed');
+        const result = await response.json();
+        if (result.success) {
+            console.log(`Screenshot opened in MS Paint: ${result.file}`);
+        } else {
+            console.error('Screenshot failed:', result.error);
+            alert('Screenshot failed: ' + result.error);
         }
     } catch (error) {
-        console.error('Error sending shortcut command:', error);
+        console.error('Error taking screenshot:', error);
+        alert('Error taking screenshot: ' + error.message);
     }
+}
+
+// Send command trigger
+async function sendCommand(commandName) {
+    if (!selectedDevice) return;
+
+    const targetDevices = getTargetDevices();
+
+    if (targetDevices.length === 0) return;
+
+    let successCount = 0;
+
+    // Execute sequentially to ensure all commands are processed reliably
+    for (const deviceName of targetDevices) {
+        try {
+            const response = await fetch('/api/command/trigger', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    device_name: deviceName,
+                    apply_mode: 'current',
+                    command: commandName
+                })
+            });
+            const result = await response.json();
+            if (result.success) successCount++;
+        } catch (err) {
+            console.error(`Command ${commandName} failed for ${deviceName}:`, err.message);
+        }
+    }
+
+    console.log(`Command sent to ${successCount}/${targetDevices.length} devices: ${commandName}`);
+
+    if (successCount < targetDevices.length) {
+        console.error('Some commands failed');
+    }
+
+    // Refresh device state after a short delay to allow bot to process command
+    // This updates button states like Start/Stop and LDStop/LDStart
+    setTimeout(() => {
+        refreshDeviceDetails();
+    }, 1000);
 }
 
 // Set screenshot FPS
@@ -1421,6 +1806,110 @@ function setScreenshotFPS() {
         console.log(`Screenshot FPS set to: ${fps}`);
     } else {
         console.warn('WebSocket not connected, FPS change not sent to server');
+    }
+}
+
+// Set theme (dark/light)
+function setTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+    console.log(`Theme set to: ${theme}`);
+}
+
+// Initialize theme dropdown to match current theme
+function initializeTheme() {
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    const themeSelect = document.getElementById('themeSelect');
+    if (themeSelect) {
+        themeSelect.value = savedTheme;
+    }
+}
+
+// Send LDPlayer command
+async function sendLDCommand(commandName) {
+    if (!selectedDevice) return;
+
+    const targetDevices = getTargetDevices();
+    console.log(`sendLDCommand: command=${commandName}, targetDevices=${targetDevices.length}, devices=${targetDevices.join(',')}`);
+
+    if (targetDevices.length === 0) return;
+
+    // Commands that require confirmation in ALL mode
+    const dangerousCommands = ['ld_start', 'ld_stop', 'ld_reboot'];
+    // Commands that require 5-second delay between devices (start/reboot only, not stop)
+    const delayedCommands = ['ld_start', 'ld_reboot'];
+
+    // Confirm if ALL mode is active and this is a dangerous command
+    if (isAllModeActive() && targetDevices.length > 1 && dangerousCommands.includes(commandName)) {
+        const actionName = commandName.replace('ld_', '').toUpperCase();
+        const confirmed = confirm(`Are you sure you want to ${actionName} LDPlayer on ALL ${targetDevices.length} devices?`);
+        if (!confirmed) return;
+    }
+
+    try {
+        let successCount = 0;
+
+        // Send commands with 5 second delay between each when in ALL mode for start/reboot only
+        if (isAllModeActive() && targetDevices.length > 1 && delayedCommands.includes(commandName)) {
+            for (let i = 0; i < targetDevices.length; i++) {
+                const deviceName = targetDevices[i];
+                const startTime = Date.now();
+                console.log(`[${new Date().toLocaleTimeString()}] Sending LDPlayer ${commandName} to ${deviceName} (${i + 1}/${targetDevices.length})...`);
+
+                const response = await fetch('/api/command/ldplayer', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        device_name: deviceName,
+                        apply_mode: 'current',
+                        command: commandName
+                    })
+                });
+
+                const result = await response.json();
+                const fetchTime = Date.now() - startTime;
+                console.log(`[${new Date().toLocaleTimeString()}] Response for ${deviceName}: ${result.success ? 'OK' : 'FAIL'} (${fetchTime}ms)`);
+                if (result.success) successCount++;
+
+                // Wait 5 seconds before next device (except for the last one)
+                if (i < targetDevices.length - 1) {
+                    console.log(`[${new Date().toLocaleTimeString()}] Waiting 5 seconds before next device...`);
+                    await delay(5000);
+                    console.log(`[${new Date().toLocaleTimeString()}] Delay complete, proceeding to next device`);
+                }
+            }
+        } else {
+            // Single device or non-dangerous command - execute sequentially for reliability
+            for (const deviceName of targetDevices) {
+                try {
+                    const response = await fetch('/api/command/ldplayer', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            device_name: deviceName,
+                            apply_mode: 'current',
+                            command: commandName
+                        })
+                    });
+                    const result = await response.json();
+                    if (result.success) successCount++;
+                } catch (err) {
+                    console.error(`LDPlayer ${commandName} failed for ${deviceName}:`, err.message);
+                }
+            }
+        }
+
+        console.log(`LDPlayer command sent to ${successCount}/${targetDevices.length} devices: ${commandName}`);
+
+        if (successCount < targetDevices.length) {
+            console.error('Some LDPlayer commands failed');
+        }
+    } catch (error) {
+        console.error('Error sending LDPlayer command:', error);
     }
 }
 

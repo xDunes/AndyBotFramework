@@ -20,7 +20,7 @@
                 </button>
                 <div class="current-device">
                     <div class="status-indicator" id="statusIndicator"></div>
-                    <span id="currentDeviceName">No device selected</span>
+                    <span id="currentDeviceName">Loading...</span>
                 </div>
                 <div class="apply-mode header-apply-mode">
                     <label class="radio-label">
@@ -34,6 +34,16 @@
                 </div>
             </div>
             <div id="settingsPanel" class="settings-panel" style="display: none;">
+                <div class="settings-section">
+                    <h4>Appearance</h4>
+                    <div class="interval-control">
+                        <label for="themeSelect">Theme:</label>
+                        <select id="themeSelect" onchange="setTheme(this.value)">
+                            <option value="dark">Dark</option>
+                            <option value="light">Light</option>
+                        </select>
+                    </div>
+                </div>
                 <div class="settings-section">
                     <h4>Live Feed Settings</h4>
                     <div class="interval-control">
@@ -56,7 +66,7 @@
                     </label>
                     <div class="interval-control">
                         <label for="refreshInterval">Interval (s):</label>
-                        <input type="number" id="refreshInterval" value="0.5" min="0.1" step="0.1">
+                        <input type="number" id="refreshInterval" value="1" min="0.5" step="0.5">
                         <button id="setInterval" class="btn btn-sm">Set</button>
                     </div>
                 </div>
@@ -66,7 +76,7 @@
                         <!-- Bot settings will be populated from config -->
                         <div class="setting-row">
                             <label class="checkbox-label">
-                                <input type="checkbox" id="debugEnabled" onchange="sendSetting('debug_enabled')">
+                                <input type="checkbox" id="debugEnabled" onchange="sendDebugSetting(this)">
                                 <span>Debug Mode</span>
                             </label>
                         </div>
@@ -78,7 +88,7 @@
                 </div>
                 <div class="settings-section">
                     <h4>Device Status</h4>
-                    <div id="headerStatusInfo" class="status-content">Select a device to view status</div>
+                    <div id="headerStatusInfo" class="status-content">Loading...</div>
                 </div>
             </div>
         </div>
@@ -97,14 +107,8 @@
 
                 <!-- Right Panel - Device Details -->
                 <section class="details-panel">
-                    <div id="deviceDetails" class="device-details">
-                        <div class="no-selection">
-                            Select a device from the list to view details
-                        </div>
-                    </div>
-
-                    <!-- Device Details Content (shown when device selected) -->
-                    <div id="deviceContent" class="device-content" style="display: none;">
+                    <!-- Device Details Content -->
+                    <div id="deviceContent" class="device-content">
                         <!-- Screenshot Section -->
                         <div class="card screenshot-card">
                             <div class="screenshot-main-container">
@@ -150,31 +154,79 @@
 
                             <hr>
 
-                            <!-- Shortcuts -->
-                            <div class="control-section collapsible-section shortcuts-section">
-                                <h4 class="collapsible-header" onclick="toggleSection('shortcuts')">
-                                    Shortcuts
-                                    <span class="collapse-icon collapsed" id="shortcutsIcon">▼</span>
+                            <!-- Commands -->
+                            <div class="control-section collapsible-section commands-section">
+                                <h4 class="collapsible-header" onclick="toggleSection('commands')">
+                                    Commands
+                                    <span class="collapse-icon collapsed" id="commandsIcon">▼</span>
                                 </h4>
-                                <div class="collapsible-content collapsed" id="shortcutsContent">
-                                    <div class="shortcuts-grid" id="shortcutsGrid">
-                                        <!-- Shortcuts will be populated from config -->
+                                <div class="collapsible-content collapsed" id="commandsContent">
+                                    <div class="commands-grid" id="commandsGrid">
+                                        <!-- Commands will be populated from config -->
                                     </div>
                                 </div>
                             </div>
 
                             <hr>
 
-                            <!-- Recent Log -->
-                            <div class="control-section">
-                                <h4>Recent Log</h4>
-                                <div class="log-container" id="logContainer">
-                                    <pre id="logText">No log entries</pre>
+                            <!-- Bot Controls -->
+                            <div class="control-section collapsible-section">
+                                <h4 class="collapsible-header" onclick="toggleSection('bot')">
+                                    Bot
+                                    <span class="collapse-icon collapsed" id="botIcon">▼</span>
+                                </h4>
+                                <div class="collapsible-content collapsed" id="botContent">
+                                    <div class="bot-controls">
+                                        <button class="btn btn-sm" onclick="sendBotCommand('start')">Start</button>
+                                        <button class="btn btn-sm" onclick="sendBotCommand('stop')">Stop</button>
+                                        <button class="btn btn-sm" onclick="sendScreenshotCommand()">Screenshot</button>
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="botDebugEnabled" onchange="sendDebugSetting(this)">
+                                            <span>Debug</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <hr>
+
+                            <!-- LDPlayer Controls -->
+                            <div class="control-section collapsible-section">
+                                <h4 class="collapsible-header" onclick="toggleSection('ldplayer')">
+                                    LDPlayer
+                                    <span class="collapse-icon collapsed" id="ldplayerIcon">▼</span>
+                                </h4>
+                                <div class="collapsible-content collapsed" id="ldplayerContent">
+                                    <div class="ldplayer-section">
+                                        <span class="ldplayer-label">Device:</span>
+                                        <div class="ldplayer-buttons">
+                                            <button class="btn btn-sm" onclick="sendLDCommand('ld_start')">Start</button>
+                                            <button class="btn btn-sm" onclick="sendLDCommand('ld_stop')">Stop</button>
+                                            <button class="btn btn-sm" onclick="sendLDCommand('ld_reboot')">Reboot</button>
+                                        </div>
+                                    </div>
+                                    <div class="ldplayer-section">
+                                        <span class="ldplayer-label">App:</span>
+                                        <div class="ldplayer-buttons">
+                                            <button class="btn btn-sm" onclick="sendLDCommand('app_start')">Start App</button>
+                                            <button class="btn btn-sm" onclick="sendLDCommand('app_stop')">Stop App</button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </section>
+            </div>
+
+            <!-- Recent Log - Spans full width on desktop -->
+            <div id="logSection" class="log-section">
+                <div class="card">
+                    <h4>Recent Log</h4>
+                    <div class="log-container" id="logContainer">
+                        <pre id="logText">No log entries</pre>
+                    </div>
+                </div>
             </div>
         </div>
     </main>

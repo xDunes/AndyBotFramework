@@ -19,7 +19,7 @@ print("="*60)
 print()
 
 try:
-    from state_manager import StateManager
+    from core.state_manager import StateManager
     print("[OK] StateManager imported successfully")
 
     # Test getting stats
