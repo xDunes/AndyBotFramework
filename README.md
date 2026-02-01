@@ -45,7 +45,7 @@ A Python-based automation framework for Android games with GUI interface, featur
 ## Project Structure
 
 ```
-Apex-Girl/
+AndyBotFramework/
 ├── start_bot.py            # Unified bot launcher for all games
 ├── master.conf             # Global device settings (ADB, LDPlayer, serials)
 ├── apex_girl.conf          # Game-specific config (functions, commands)
@@ -125,7 +125,7 @@ pip install ppadb opencv-python numpy Pillow pytesseract keyboard
 
 ```bash
 git clone <repository-url>
-cd Apex-Girl
+cd AndyBotFramework
 ```
 
 ### 2. Install Python Dependencies
@@ -226,7 +226,21 @@ Each game has its own config file in the project root (e.g., `apex_girl.conf`):
 
 ### Finding Device Serial
 
-The bot automatically detects the hardware serial number. Run your bot and look for:
+Use the built-in serial lister tool:
+
+```bash
+python tools/listAvailableSerials.py
+```
+
+This will display all connected device serials:
+```
+[12:30:45] Found 2 available device(s):
+
+  1. 00ce49b2
+  2. 1a2b3c4d
+```
+
+Alternatively, the bot automatically detects the hardware serial when you run it:
 ```
 Detected serial: 00ce49b2
 Connected to device: 00ce49b2
@@ -492,6 +506,13 @@ Debug log viewer with three-column interface for browsing bot execution history.
 python tools/LogViewer.py
 ```
 
+### listAvailableSerials.py
+List all connected ADB device serial numbers.
+
+```bash
+python tools/listAvailableSerials.py
+```
+
 ### ArrangeWindows.py
 Arrange multiple LDPlayer windows side-by-side.
 
@@ -574,7 +595,7 @@ See [docs/CHANGELOG.md](docs/CHANGELOG.md) for version history.
 
 ## License
 
-Part of the Apex-Girl project.
+Part of the AndyBotFramework project. Apex-Girl is a reference game implementation.
 
 ---
 

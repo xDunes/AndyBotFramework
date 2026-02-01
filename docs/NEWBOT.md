@@ -812,7 +812,7 @@ adb start-server
 
 Make sure you're running from the project root:
 ```bash
-cd Apex-Girl
+cd AndyBotFramework
 python start_bot.py -g my_game -d Device1
 ```
 

@@ -207,7 +207,7 @@ Complete restructure of the codebase into a clean modular architecture for bette
 
 #### Project Structure
 ```
-Apex-Girl/
+AndyBotFramework/
 ├── start_bot.py            # Unified bot launcher for all games
 ├── master.conf             # Global device settings
 ├── apex_girl.conf          # Game-specific configuration

@@ -340,4 +340,4 @@ POST /api/command/ldplayer            # LDPlayer control
 
 ## License
 
-Same as ApexGirl Bot project.
+Same as AndyBotFramework project.
