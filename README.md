@@ -1,6 +1,6 @@
 # Andy Bot Framework
 
-[![Version](https://img.shields.io/badge/version-0.4.1-blue.svg)](docs/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](docs/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -125,7 +125,7 @@ pip install ppadb opencv-python numpy Pillow pytesseract keyboard
 
 ```bash
 git clone <repository-url>
-cd AndyBotFramework
+cd Apex-Girl
 ```
 
 ### 2. Install Python Dependencies

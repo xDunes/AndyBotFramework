@@ -517,6 +517,7 @@ Apex-Girl/
 
 ## Version History
 
+- **0.5.0** - 2026-02-01 - Architecture cleanup: direct in-memory state, removed standalone web server, integrated web UI in master_of_bots
 - **0.4.1** - 2025-12-16 - Auto-launch LDPlayer devices, condensed ADB logging, improved device detection
 - **0.4.0** - 2025-12-16 - Fixed ALL mode device selection bug, removed config.json dependency
 - **0.3.0** - 2025-12-08 - Major refactoring: unified start_bot.py, commands.py modules, "Shortcuts"→"Commands" rename
