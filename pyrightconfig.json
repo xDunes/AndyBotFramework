@@ -1,0 +1,14 @@
+{
+    "include": ["."],
+    "exclude": [
+        "__pycache__",
+        "logs",
+        "screenshots",
+        "state"
+    ],
+    "pythonVersion": "3.13",
+    "pythonPlatform": "Windows",
+    "typeCheckingMode": "basic",
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false
+}

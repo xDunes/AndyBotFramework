@@ -12,16 +12,18 @@ Usage:
 Examples:
     python start_bot.py                               # Interactive selection
     python start_bot.py -g apex_girl -d Gelvil
-    python start_bot.py -g apex_girl -d Gelvil --no-auto-start
+    python start_bot.py -g apex_girl -d Gelvil --no-auto-start-bot
+    python start_bot.py -g apex_girl -d Gelvil --no-auto-start-device
     python start_bot.py --game template --device Device1
     python start_bot.py --list-games
 
 Options:
-    -g, --game          Game module name (folder in games/)
-    -d, --device        Device name (must exist in master.conf)
-    --no-auto-start     Disable auto-starting the bot on launch
-    -l, --list-games    List available games and exit
-    -h, --help          Show this help message
+    -g, --game              Game module name (folder in games/)
+    -d, --device            Device name (must exist in master.conf)
+    --no-auto-start-bot     Disable auto-starting the bot on launch
+    --no-auto-start-device  Disable auto-launching LDPlayer device
+    -l, --list-games        List available games and exit
+    -h, --help              Show this help message
 
 If no arguments are provided, interactive mode walks you through selection.
 """
@@ -33,7 +35,7 @@ import importlib
 import tkinter as tk
 
 # Core framework
-from core import load_config, load_master_config, BotController
+from core import load_config, load_master_config, BotController, launch_devices_if_needed
 from core.utils import build_function_map, build_command_map, set_gui_instance, set_state_manager, set_log_db
 
 # Generic GUI
@@ -195,7 +197,8 @@ def main():
         epilog="""
 Examples:
   python start_bot.py -g apex_girl -d Gelvil
-  python start_bot.py -g apex_girl -d Gelvil --no-auto-start
+  python start_bot.py -g apex_girl -d Gelvil --no-auto-start-bot
+  python start_bot.py -g apex_girl -d Gelvil --no-auto-start-device
   python start_bot.py --game template --device Device1
   python start_bot.py --list-games
         """
@@ -205,8 +208,10 @@ Examples:
                         help='Game module name (folder in games/)')
     parser.add_argument('-d', '--device', type=str,
                         help='Device name (must exist in master.conf)')
-    parser.add_argument('--no-auto-start', action='store_true',
+    parser.add_argument('--no-auto-start-bot', action='store_true',
                         help='Disable auto-starting the bot on launch')
+    parser.add_argument('--no-auto-start-device', action='store_true',
+                        help='Disable auto-launching LDPlayer device')
     parser.add_argument('-l', '--list-games', action='store_true',
                         help='List available games and exit')
 
@@ -229,11 +234,11 @@ Examples:
     # Interactive mode if no game/device specified
     if not args.game or not args.device:
         game_name, device_name = interactive_mode(master_config)
-        auto_start = not args.no_auto_start
+        auto_start_bot = not args.no_auto_start_bot
     else:
         game_name = args.game
         device_name = args.device
-        auto_start = not args.no_auto_start
+        auto_start_bot = not args.no_auto_start_bot
 
         # Validate game exists
         available_games = get_available_games()
@@ -247,6 +252,17 @@ Examples:
             print(f"ERROR: Device '{device_name}' not found in master.conf")
             print(f"Available devices: {', '.join(master_config.get('devices', {}).keys())}")
             sys.exit(1)
+
+    # Auto-launch LDPlayer device (default behavior, disabled with --no-auto-start-device)
+    if not args.no_auto_start_device:
+        print(f"Checking if device '{device_name}' needs to be launched...")
+        launch_devices_if_needed(
+            device_names=[device_name],
+            master_config=master_config,
+            stagger_delay=5.0,
+            boot_wait=45.0,
+            log_func=print
+        )
 
     # Load merged config (master + game-specific)
     config = load_config(game_name)
@@ -277,7 +293,7 @@ Examples:
 
     # Create GUI (handles display only)
     root = tk.Tk()
-    gui = BotGUI(root, device_name, config=config)
+    gui = BotGUI(root, device_name, config=config, enable_remote=False)
     gui.set_controller(controller)
     controller.set_gui(gui)
 
@@ -287,25 +303,23 @@ Examples:
 
     # Register logging components with core
     set_gui_instance(gui)
-    set_state_manager(gui.state_manager)
+    if gui.state_manager:
+        set_state_manager(gui.state_manager)
     if gui.log_db:
         set_log_db(gui.log_db, gui.debug.get)
 
     # Log startup message
     gui.log(f"{display_name} Bot started for device: {device_name}")
-    if auto_start:
+    if auto_start_bot:
         gui.log("Auto-starting bot...")
     else:
         gui.log("Use checkboxes to enable functions, then click Start")
 
-    # Auto-start if requested
-    if auto_start:
+    # Auto-start bot if requested (default behavior)
+    if auto_start_bot:
         root.after(100, gui.start_bot)
 
-    # Start remote monitoring for web commands
-    gui.start_remote_monitoring()
-
-    # Start the GUI main loop
+    # Start the GUI main loop (no remote monitoring in local mode)
     root.mainloop()
 
 

@@ -72,7 +72,7 @@ def auto_reconnect(func):
         Wrapped function with reconnection logic
 
     Note:
-        Retries up to max_reconnect_attempts (from config.json) times before giving up.
+        Retries up to max_reconnect_attempts (from master.conf) times before giving up.
         Raises AndroidStoppedException if stopped by user or max attempts reached.
         Uses a lock to prevent multiple threads from reconnecting simultaneously.
     """
@@ -125,7 +125,10 @@ def auto_reconnect(func):
                     reconnect_state['permanent_failure'] = True
                     raise AndroidStoppedException(f"ADB error during reconnection: {adb_error}")
 
-                while not self._connect_to_device(initialize=False):
+                while True:
+                    success, available_serials = self._connect_to_device(initialize=False)
+                    if success:
+                        break
                     attempts += 1
                     if self.should_stop:
                         self.log("Reconnection stopped by user")
@@ -133,11 +136,11 @@ def auto_reconnect(func):
                         reconnect_state['permanent_failure'] = True
                         raise AndroidStoppedException("Reconnection stopped by user")
                     if attempts >= max_attempts:
-                        self.log(f"Reconnection failed after {max_attempts} attempts")
+                        self.log(f"Reconnection failed after {max_attempts} attempts. Available: {', '.join(available_serials) if available_serials else 'none'}")
                         reconnect_state['failed'] = True
                         reconnect_state['permanent_failure'] = True
                         raise AndroidStoppedException(f"Reconnection failed after {max_attempts} attempts")
-                    self.log(f"Reconnection failed, retrying... ({attempts}/{max_attempts})")
+                    self.log(f"Reconnecting: Serial '{self.serial_number}' not found ({attempts}/{max_attempts}). Available: {', '.join(available_serials) if available_serials else 'none'}")
 
                 # Success - mark that we just reconnected so waiting threads know
                 reconnect_state['just_reconnected'] = True
@@ -274,14 +277,22 @@ class Android:
         """
         self.gui = gui_instance
 
-    def log(self, message):
+    def log(self, message, console=False):
         """Log message through the central logging system
 
         Args:
             message: Message string to log
+            console: If True, also print to console (for connection debug messages)
         """
         from .utils import log as central_log
         central_log(message)
+
+        # Also print to console if requested (for connection debugging when GUI not yet set)
+        if console:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            device_prefix = f"[{self.device_name}]" if self.device_name else ""
+            print(f"[{timestamp}]{device_prefix} {message}")
 
     # ============================================================================
     # DEVICE CONNECTION & MANAGEMENT
@@ -300,7 +311,7 @@ class Android:
 
         Connects to local ADB server, discovers devices, and connects to
         the device matching self.serial_number. Retries connection up to
-        max_reconnect_attempts (from config.json) times before giving up.
+        max_reconnect_attempts (from master.conf) times before giving up.
 
         Raises:
             AndroidStoppedException: If should_stop is set, max attempts reached,
@@ -311,24 +322,29 @@ class Android:
         try:
             self.devices = adb.devices()
         except Exception as e:
-            self.log(f"ADB ERROR: ADB server not running - {e}")
+            self.log(f"ADB ERROR: ADB server not running - {e}", console=True)
             raise AndroidStoppedException(f"ADB server not running: {e}")
 
         if len(self.devices) == 0:
-            self.log('ADB ERROR: No devices attached')
+            self.log('ADB ERROR: No devices attached', console=True)
             raise AndroidStoppedException("No devices attached")
 
         max_attempts = _load_max_reconnect_attempts()
         attempts = 0
-        while not self._connect_to_device(initialize=False):
+        while True:
+            success, available_serials = self._connect_to_device(initialize=False)
+            if success:
+                break
             attempts += 1
             if self.should_stop:
-                self.log("Connection stopped by user")
+                self.log("Connection stopped by user", console=True)
                 raise AndroidStoppedException("Connection stopped by user")
             if attempts >= max_attempts:
-                self.log(f"Connection failed after {max_attempts} attempts")
-                raise AndroidStoppedException(f"Connection failed after {max_attempts} attempts")
-            self.log(f"Connection failed, retrying... ({attempts}/{max_attempts})")
+                avail = ', '.join(available_serials) if available_serials else 'none'
+                self.log(f"FAILED: Stopping for '{self.serial_number}'. Available: {avail}", console=True)
+                raise AndroidStoppedException(f"Serial '{self.serial_number}' not found")
+            # Log condensed retry message with attempt number and available serials
+            self.log(f"Serial '{self.serial_number}' not found ({attempts}/{max_attempts}). Available: {', '.join(available_serials) if available_serials else 'none'}", console=True)
 
     def _connect_to_device(self, initialize=True):
         """Connect to device matching serial number
@@ -337,29 +353,36 @@ class Android:
             initialize: Whether to reinitialize device list (default: True)
 
         Returns:
-            bool: True if connection successful, False otherwise
+            tuple: (success: bool, available_serials: list) - success status and list of detected serials
         """
         if initialize:
             self._initialize_connection()
+            return (True, [])  # If initialize succeeds, we're connected
 
+        available_serials = []
         for dev in self.devices:
             try:
+                # Check device state - only connect to fully online devices
+                dev_state = dev.get_state()
+                if dev_state != 'device':
+                    continue
+
                 dev_serial = dev.shell('getprop ro.boot.serialno')
                 if dev_serial is None:
                     continue
-                self.log(f"Detected serial: {dev_serial.strip()}")
+                dev_serial = dev_serial.strip()
+                available_serials.append(dev_serial)
 
                 if self.serial_number in dev_serial:
-                    self.log(f"Connected to device: {self.device_name} (serial: {dev_serial.strip()})")
+                    self.log(f"Connected to device: {self.device_name} (serial: {dev_serial})", console=True)
                     self.device = dev
-                    return True
+                    return (True, available_serials)
 
-            except Exception as e:
-                self.log(f"Device connection error: {e}")
+            except Exception:
                 continue
 
         time.sleep(1)
-        return False
+        return (False, available_serials)
 
     # ============================================================================
     # SCREEN CAPTURE

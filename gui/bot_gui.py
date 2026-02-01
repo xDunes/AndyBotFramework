@@ -17,7 +17,6 @@ import threading
 from datetime import datetime
 
 from core.config_loader import load_config, get_serial
-from core.state_manager import StateManager
 from core.log_database import LogDatabase
 from core.ldplayer import LDPlayer
 
@@ -25,13 +24,14 @@ from core.ldplayer import LDPlayer
 class BotGUI:
     """Generic GUI class for bot interface - config-driven"""
 
-    def __init__(self, root, device_name, config=None):
+    def __init__(self, root, device_name, config=None, enable_remote=False):
         """Initialize BotGUI with window and widgets
 
         Args:
             root: tkinter.Tk root window
             device_name: Device name from config
             config: Optional config dict (loads from file if not provided)
+            enable_remote: Enable StateManager for remote monitoring (default: False)
         """
         self.root = root
         self.device_name = device_name
@@ -95,8 +95,11 @@ class BotGUI:
         if self.debug.get():
             self.log_db = LogDatabase(self.device_name)
 
-        # State manager
-        self.state_manager = StateManager(self.device_name)
+        # State manager (optional - only for remote monitoring)
+        self.state_manager = None
+        if enable_remote:
+            from core.state_manager import StateManager
+            self.state_manager = StateManager(self.device_name)
         self._state_update_counter = 0
 
         self.create_widgets()
@@ -140,9 +143,14 @@ class BotGUI:
     def _on_checkbox_change(self, func_name):
         """Called when a function checkbox is toggled"""
         try:
-            self._update_full_state()
+            if self._has_state_manager():
+                self._update_full_state()
         except Exception:
             pass
+
+    def _has_state_manager(self):
+        """Check if state manager is available"""
+        return self.state_manager is not None
 
     def _init_command_triggers(self):
         """Initialize command triggers from config"""
@@ -277,6 +285,13 @@ class BotGUI:
         self.open_log_button = ttk.Button(open_log_button_frame, text="Logs",
                                           command=self.open_log_viewer)
         self.open_log_button.pack(fill="x")
+
+        # Details button
+        details_button_frame = ttk.Frame(controls_frame)
+        details_button_frame.pack(fill="x", pady=(1, 1))
+        self.details_button = ttk.Button(details_button_frame, text="Details",
+                                         command=self.show_details_dialog)
+        self.details_button.pack(fill="x")
 
         # Start/Stop button
         button_frame = ttk.Frame(controls_frame)
@@ -711,6 +726,104 @@ class BotGUI:
         subprocess.Popen(cmd)
         self.log(f"Opening Log Viewer for {self.device_name}...")
 
+    def show_details_dialog(self):
+        """Show device details dialog with command queue and current activity"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Device Details - {self.device_name}")
+        dialog.geometry("500x400")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        main_frame = ttk.Frame(dialog, padding=10)
+        main_frame.pack(fill="both", expand=True)
+
+        # Current Activity Section
+        activity_frame = ttk.LabelFrame(main_frame, text="Current Activity", padding=10)
+        activity_frame.pack(fill="x", pady=(0, 10))
+
+        activity_label = ttk.Label(activity_frame, text="Working on:", font=("Arial", 9))
+        activity_label.pack(anchor="w")
+
+        activity_value = ttk.Label(activity_frame, text="Loading...", font=("Arial", 9, "bold"))
+        activity_value.pack(anchor="w", pady=(5, 0))
+
+        # Command Queue Section
+        queue_frame = ttk.LabelFrame(main_frame, text="Command Queue", padding=10)
+        queue_frame.pack(fill="both", expand=True)
+
+        queue_count_label = ttk.Label(queue_frame, text="0 commands pending", font=("Arial", 8))
+        queue_count_label.pack(anchor="w", pady=(0, 5))
+
+        # Scrollable queue list
+        queue_container = ttk.Frame(queue_frame)
+        queue_container.pack(fill="both", expand=True)
+
+        queue_text = tk.Text(queue_container, height=10, width=1, wrap=tk.WORD,
+                            font=("Courier", 8), state=tk.DISABLED)
+        scrollbar = ttk.Scrollbar(queue_container, command=queue_text.yview)
+        queue_text.config(yscrollcommand=scrollbar.set)
+
+        queue_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Function to update details
+        def update_details():
+            try:
+                # Get current action from database (if state manager available)
+                current_action = "Idle"
+                if self._has_state_manager():
+                    from core.state_manager import StateManager
+                    state = StateManager.get_device_state(self.device_name)
+                    current_action = state.get('current_action', '') if state else ''
+                    if not current_action:
+                        current_action = "Idle"
+                activity_value.config(text=current_action)
+
+                # Get command queue info from bot
+                if self.bot and hasattr(self.bot, 'get_command_queue_info'):
+                    queue_info = self.bot.get_command_queue_info()
+                    commands = queue_info['commands']
+                    queue_count_label.config(text=f"{len(commands)} command(s) pending")
+
+                    # Update queue text
+                    queue_text.config(state=tk.NORMAL)
+                    queue_text.delete(1.0, tk.END)
+
+                    if commands:
+                        for i, cmd in enumerate(commands, 1):
+                            delay = int(cmd['delay_seconds'])
+                            queue_text.insert(tk.END, f"{i}. {cmd['description']}\n")
+                            queue_text.insert(tk.END, f"   Queued: {cmd['queued_at']} ({delay}s ago)\n\n")
+                    else:
+                        queue_text.insert(tk.END, "No commands in queue")
+
+                    queue_text.config(state=tk.DISABLED)
+                else:
+                    queue_count_label.config(text="0 commands pending")
+                    queue_text.config(state=tk.NORMAL)
+                    queue_text.delete(1.0, tk.END)
+                    queue_text.insert(tk.END, "Bot not running or queue not available")
+                    queue_text.config(state=tk.DISABLED)
+
+            except Exception as e:
+                self.log(f"Error updating details: {e}")
+
+            # Schedule next update if dialog still exists
+            if dialog.winfo_exists():
+                dialog.after(1000, update_details)
+
+        # Start updating
+        update_details()
+
+        # Close button
+        ttk.Button(main_frame, text="Close", command=dialog.destroy).pack(pady=(10, 0))
+
     def _on_settings_change(self, *args):
         """Called when settings change"""
         self._update_full_state()
@@ -722,7 +835,7 @@ class BotGUI:
             index = device_config.get('index', 0)
             ld = LDPlayer.from_config()
             self.ld_running_state = ld.is_running(index=index)
-            if hasattr(self, 'state_manager'):
+            if self._has_state_manager():
                 self.state_manager.update_ld_running(self.ld_running_state)
         except Exception:
             pass
@@ -739,6 +852,9 @@ class BotGUI:
 
     def _update_full_state(self):
         """Update full state to state manager"""
+        if not self._has_state_manager():
+            return
+
         try:
             state = {
                 'is_running': self.is_running,
@@ -757,6 +873,9 @@ class BotGUI:
 
     def start_live_screenshot_updater(self):
         """Start background thread to update screenshots for remote monitoring"""
+        if not self._has_state_manager():
+            return
+
         if self.live_screenshot_running:
             return
 
@@ -767,7 +886,7 @@ class BotGUI:
             ld_check_counter = 0
             while self.live_screenshot_running:
                 try:
-                    if self.is_running and self.andy is not None and hasattr(self, 'state_manager'):
+                    if self.is_running and self.andy is not None and self._has_state_manager():
                         screenshot = self.andy.capture_screen()
                         if screenshot is not None:
                             self.state_manager.update_screenshot(screenshot)
@@ -802,6 +921,9 @@ class BotGUI:
 
     def start_remote_monitoring(self):
         """Start background thread to monitor remote commands"""
+        if not self._has_state_manager():
+            return
+
         if self.remote_monitoring_running:
             return
 
@@ -942,5 +1064,6 @@ class BotGUI:
 
     def run(self):
         """Start the GUI main loop"""
-        self.start_remote_monitoring()
+        if self._has_state_manager():
+            self.start_remote_monitoring()
         self.root.mainloop()

@@ -1,6 +1,6 @@
 # Andy Bot Framework
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](docs/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.1-blue.svg)](docs/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -31,11 +31,12 @@ A Python-based automation framework for Android games with GUI interface, featur
 - **Image recognition** - OpenCV-based template matching for game elements
 - **OCR support** - Tesseract integration for reading in-game text
 - **GUI interface** - Tkinter-based control panel with real-time logging
-- **Web interface** - Remote monitoring and control via browser (desktop & mobile)
-- **State monitoring** - Real-time multi-bot state tracking with SQLite
-- **Debug logging system** - SQLite-based persistent logging with screenshot storage
+- **Web interface** - Integrated multi-bot monitoring and control (master_of_bots only)
+- **Direct in-memory state** - Instant state access with no database lag
+- **Debug logging system** - Optional SQLite-based persistent logging with screenshot storage
 - **LogViewer** - Standalone debug log viewer with session browsing and inline image display
 - **Auto-start capability** - Bots can auto-connect and start on launch
+- **Auto-launch devices** - Automatically launches LDPlayer devices if not running
 - **Control key override** - Hold Ctrl to skip functions without stopping the bot
 - **ADB command serialization** - Thread-safe ADB access prevents command conflicts
 
@@ -58,7 +59,7 @@ Apex-Girl/
 │   ├── ldplayer.py         # LDPlayer emulator control
 │   ├── log_database.py     # SQLite debug logging
 │   ├── ocr.py              # OCR utilities
-│   ├── state_manager.py    # Web interface state management
+│   ├── state_manager.py    # Optional state persistence (not used by default)
 │   └── utils.py            # Shared utilities and logging
 │
 ├── games/                  # Game-specific modules
@@ -77,10 +78,10 @@ Apex-Girl/
 │   ├── __init__.py
 │   └── bot_gui.py          # Config-driven Tkinter GUI
 │
-├── web/                    # Web interface
-│   ├── server.py           # Flask API server
-│   ├── static/             # Frontend assets
-│   └── README.md           # Web interface documentation
+├── web/                    # Web interface (master_of_bots only)
+│   └── static/             # Frontend assets (HTML/CSS/JS)
+│
+├── master_of_bots.py       # Headless multi-bot manager with integrated web UI
 │
 ├── tools/                  # Utility scripts
 │   ├── ArrangeWindows.py   # Window arrangement utility
@@ -237,7 +238,7 @@ Connected to device: 00ce49b2
 
 ## Usage
 
-### Running a Bot
+### Running a Bot (Single Device)
 
 ```bash
 python start_bot.py -g <game> -d <device> [options]
@@ -246,20 +247,64 @@ python start_bot.py -g <game> -d <device> [options]
 Options:
 - `-g, --game` - Game module name (folder in games/)
 - `-d, --device` - Device name (must exist in master.conf)
-- `-a, --auto-start` - Auto-start the bot on launch
+- `--no-auto-start-bot` - Disable auto-starting the bot on launch
+- `--no-auto-start-device` - Disable auto-launching LDPlayer device
 - `-l, --list-games` - List available games and exit
 
 Examples:
 ```bash
-# Run Apex Girl bot for device Gelvil
+# Run Apex Girl bot for device Gelvil (auto-launches device and starts bot)
 python start_bot.py -g apex_girl -d Gelvil
 
-# Run with auto-start
-python start_bot.py -g apex_girl -d Gelvil --auto-start
+# Don't auto-start the bot (manual start via GUI)
+python start_bot.py -g apex_girl -d Gelvil --no-auto-start-bot
+
+# Don't auto-launch LDPlayer device
+python start_bot.py -g apex_girl -d Gelvil --no-auto-start-device
 
 # List available games
 python start_bot.py --list-games
 ```
+
+### Running Multiple Bots (Master of Bots)
+
+For managing multiple bots from a single process with web interface:
+
+```bash
+python master_of_bots.py <game> [options]
+```
+
+Options:
+- `--port PORT` - Web server port (default: 5000)
+- `--devices DEVICES` - Comma-separated list of devices (default: all)
+- `--no-auto-start-bot` - Disable auto-starting all bots on launch
+- `--no-auto-start-device` - Disable auto-launching LDPlayer devices
+- `--no-web` - Disable web server (CLI-only mode)
+
+Examples:
+```bash
+# Run all configured devices (auto-launches and starts bots)
+python master_of_bots.py apex_girl
+
+# Run specific devices only
+python master_of_bots.py apex_girl --devices Gelvil,Gelvil1
+
+# Run on different port
+python master_of_bots.py apex_girl --port 5001
+
+# Don't auto-start bots (start via web interface)
+python master_of_bots.py apex_girl --no-auto-start-bot
+```
+
+### Auto-Launch Behavior
+
+By default, both `start_bot.py` and `master_of_bots.py` will:
+1. Check if LDPlayer devices are running
+2. Launch any devices that aren't running (staggered 5 seconds apart)
+3. Wait 45 seconds for devices to boot
+4. Connect and start bots
+
+**Note:** Devices must have an `index` field in master.conf to be auto-launched.
 
 ### GUI Controls
 
@@ -402,7 +447,7 @@ For the complete bot creation guide, see [docs/NEWBOT.md](docs/NEWBOT.md).
 
 ## Web Interface & Remote Monitoring
 
-The framework includes a Flask-based web interface for remote monitoring and control.
+The web interface is integrated into `master_of_bots.py` for headless multi-bot management.
 
 ### Quick Start
 
@@ -410,8 +455,8 @@ The framework includes a Flask-based web interface for remote monitoring and con
 # Install dependencies
 pip install flask flask-cors flask-socketio
 
-# Start the server
-python web/server.py
+# Start master_of_bots with integrated web UI
+python master_of_bots.py apex_girl
 
 # Open browser
 # Local: http://localhost:5000
@@ -420,14 +465,19 @@ python web/server.py
 
 ### Features
 
-- Real-time bot status monitoring
-- Remote control (toggle checkboxes, adjust settings)
-- Live screenshot viewing
-- Send tap/swipe commands via screenshot
-- Multi-device dashboard
-- Mobile-friendly design
+- **Real-time monitoring** - Instant state updates with no database lag
+- **Remote control** - Toggle checkboxes, adjust settings, send commands
+- **Live screenshots** - High-performance streaming via direct memory access
+- **Multi-device dashboard** - Manage all bots from one interface
+- **Mobile-friendly** - Works on desktop and mobile browsers
 
-See [web/README.md](web/README.md) for full documentation.
+### Architecture
+
+- **start_bot.py** - Pure local mode with Tkinter GUI (no remote capabilities)
+- **master_of_bots.py** - Headless mode with integrated Flask web server
+  - Direct in-memory state access (no database relay)
+  - Instant command execution (< 100ms)
+  - WebSocket streaming for real-time updates
 
 ---
 

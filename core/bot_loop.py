@@ -59,16 +59,17 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
         andy = Android(get_serial(device), device_name=device)
         andy.set_gui(gui)
 
-        # Mark as running in state manager
+        # Mark as running in state manager (if available)
         try:
-            gui.state_manager.mark_running()
+            if hasattr(gui, 'state_manager') and gui.state_manager:
+                gui.state_manager.mark_running()
         except Exception as e:
             gui.log(f"[System] Error marking bot as running: {e}")
 
         gui.root.after(0, gui._on_settings_change)
 
-    except AndroidStoppedException as e:
-        gui.log(f"Connection stopped: {e}")
+    except AndroidStoppedException:
+        # Error already logged by android.py with available serials
         _cleanup_on_error(gui)
         return
     except Exception as error:
@@ -103,6 +104,9 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
             # Get sleep time from GUI settings
             sleep_time = _get_sleep_time(gui)
 
+            # Track if any function executed this iteration
+            any_function_executed = False
+
             # Execute enabled functions
             for func_name, func in function_map.items():
                 # Check if Control key is held down before each function
@@ -130,10 +134,17 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
                         continue
 
                 gui.update_status("Running", func_name)
+                # Update current action in state manager (if available)
+                try:
+                    if hasattr(gui, 'state_manager') and gui.state_manager:
+                        gui.state_manager.update_current_action(func_name)
+                except Exception:
+                    pass
 
                 try:
                     # Call function
                     result = _execute_function(func, bot, device, gui, func_name)
+                    any_function_executed = True
 
                     # Update last run time only if function didn't explicitly fail
                     # Functions return False to indicate failure/abort - cooldown should NOT start
@@ -158,10 +169,23 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
                     gui.update_status("Running", f"Error in {func_name}")
                     time.sleep(1)
 
+            # If no functions executed, take a screenshot to keep web feed updated
+            if not any_function_executed:
+                try:
+                    bot.screenshot()
+                except Exception:
+                    pass  # Ignore screenshot errors when idle
+
             # Run Fix/Recover if enabled
             if has_keyboard and keyboard.is_pressed('ctrl'):
                 gui.update_status("Running", "CTRL held - skipping Fix")
             elif hasattr(gui, 'fix_enabled') and gui.fix_enabled.get():
+                # Update current action for Fix/Recover (if state manager available)
+                try:
+                    if hasattr(gui, 'state_manager') and gui.state_manager:
+                        gui.state_manager.update_current_action("Fix/Recovery")
+                except Exception:
+                    pass
                 _run_fix_recover(gui, bot, device, fix_recover_func)
 
             # Update heartbeat
@@ -169,6 +193,12 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
 
             # Sleep if configured
             if sleep_time > 0:
+                # Update current action to idle/sleeping (if state manager available)
+                try:
+                    if hasattr(gui, 'state_manager') and gui.state_manager:
+                        gui.state_manager.update_current_action("Idle")
+                except Exception:
+                    pass
                 if has_keyboard and keyboard.is_pressed('ctrl'):
                     gui.update_status("Running", "CTRL held - override active")
                 else:
@@ -210,7 +240,9 @@ def _cleanup_on_stop(gui):
     gui.root.after(0, lambda: gui.toggle_button.config(text="Start"))
     gui.root.after(0, gui._update_status_label)
     try:
-        gui.state_manager.mark_stopped()
+        if hasattr(gui, 'state_manager') and gui.state_manager:
+            gui.state_manager.update_current_action("")  # Clear current action
+            gui.state_manager.mark_stopped()
         gui.root.after(0, gui._update_full_state)
     except Exception as e:
         gui.log(f"[System] Error updating state on stop: {e}")
@@ -223,6 +255,12 @@ def _handle_commands(gui, bot, command_handlers):
         if hasattr(gui, 'command_triggers') and gui.command_triggers.get(trigger_key):
             gui.command_triggers[trigger_key] = False
             gui.update_status("Running", f"{command_id} (command)")
+            # Update current action for user command (if state manager available)
+            try:
+                if hasattr(gui, 'state_manager') and gui.state_manager:
+                    gui.state_manager.update_current_action(f"User command: {command_id}")
+            except Exception:
+                pass
             try:
                 handler(bot, gui)
             except BotStoppedException:
@@ -305,15 +343,25 @@ def _run_fix_recover(gui, bot, device, fix_recover_func):
 
 
 def _update_heartbeat(gui, bot):
-    """Update state manager heartbeat and screenshot"""
+    """Update state manager heartbeat and screenshot (if state manager available)"""
     try:
-        gui.state_manager.heartbeat()
+        if hasattr(gui, 'state_manager') and gui.state_manager:
+            gui.state_manager.heartbeat()
     except Exception as e:
         gui.log(f"[System] Error updating heartbeat: {e}")
 
+    # Update command queue info (if state manager available)
+    try:
+        if hasattr(gui, 'state_manager') and gui.state_manager and hasattr(bot, 'get_command_queue_info'):
+            queue_info = bot.get_command_queue_info()
+            gui.state_manager.update_command_queue(queue_info)
+    except Exception as e:
+        gui.log(f"[System] Error updating command queue: {e}")
+
     try:
         screenshot = bot.screenshot()
-        gui.state_manager.update_screenshot(screenshot)
+        if hasattr(gui, 'state_manager') and gui.state_manager:
+            gui.state_manager.update_screenshot(screenshot)
     except AndroidStoppedException:
         raise
     except Exception as e:

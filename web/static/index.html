@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title id="pageTitle">Bot Remote Monitor</title>
-    <link rel="stylesheet" href="styles.css?v=20251116021">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🤖</text></svg>">
+    <link rel="stylesheet" href="styles.css?v=20251230010">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="app.js?v=20251116012"></script>
+    <script src="app.js?v=20251230005"></script>
 </head>
 <body>
     <!-- Header -->
@@ -19,13 +20,25 @@
                     </svg>
                 </button>
                 <div class="current-device">
-                    <div class="status-indicator" id="statusIndicator"></div>
                     <span id="currentDeviceName">Loading...</span>
+                </div>
+                <!-- Device Details (inline in header - desktop only) -->
+                <div id="deviceDetailsHeader" class="device-details-inline" style="display: none;">
+                    <div class="detail-item">
+                        <span class="detail-label">Activity:</span>
+                        <span class="detail-value" id="headerCurrentActivity">Idle</span>
+                    </div>
+                    <div class="detail-separator">|</div>
+                    <div class="detail-item detail-queue-clickable" onclick="showQueueModal()" title="Click for full queue">
+                        <span class="detail-label">Queue:</span>
+                        <span class="detail-value" id="headerQueueSummary">0</span>
+                        <div id="headerQueuePreview" class="queue-preview"></div>
+                    </div>
                 </div>
                 <div class="apply-mode header-apply-mode">
                     <label class="radio-label">
                         <input type="radio" name="applyModeHeader" value="current" checked>
-                        <span>Current</span>
+                        <span>One</span>
                     </label>
                     <label class="radio-label">
                         <input type="radio" name="applyModeHeader" value="all">
@@ -33,6 +46,7 @@
                     </label>
                 </div>
             </div>
+
             <div id="settingsPanel" class="settings-panel" style="display: none;">
                 <div class="settings-section">
                     <h4>Appearance</h4>
@@ -42,44 +56,6 @@
                             <option value="dark">Dark</option>
                             <option value="light">Light</option>
                         </select>
-                    </div>
-                </div>
-                <div class="settings-section">
-                    <h4>Live Feed Settings</h4>
-                    <div class="interval-control">
-                        <label for="screenshotFPS">Screenshot FPS:</label>
-                        <select id="screenshotFPS" onchange="setScreenshotFPS()">
-                            <option value="1">1 FPS (Low)</option>
-                            <option value="3">3 FPS (Medium)</option>
-                            <option value="5" selected>5 FPS (Default)</option>
-                            <option value="10">10 FPS (High)</option>
-                            <option value="15">15 FPS (Very High)</option>
-                            <option value="20">20 FPS (Maximum)</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="settings-section">
-                    <h4>Auto-Refresh (Fallback)</h4>
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="autoRefresh" checked>
-                        <span>Enabled</span>
-                    </label>
-                    <div class="interval-control">
-                        <label for="refreshInterval">Interval (s):</label>
-                        <input type="number" id="refreshInterval" value="1" min="0.5" step="0.5">
-                        <button id="setInterval" class="btn btn-sm">Set</button>
-                    </div>
-                </div>
-                <div class="settings-section">
-                    <h4>Bot Settings</h4>
-                    <div class="settings-controls" id="botSettings">
-                        <!-- Bot settings will be populated from config -->
-                        <div class="setting-row">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="debugEnabled" onchange="sendDebugSetting(this)">
-                                <span>Debug Mode</span>
-                            </label>
-                        </div>
                     </div>
                 </div>
                 <div class="settings-section">
@@ -125,19 +101,21 @@
 
                         <!-- Remote Control Section -->
                         <div class="card control-panel">
-                            <!-- Apply Mode Toggle -->
-                            <div class="apply-mode">
-                                <label class="radio-label">
-                                    <input type="radio" name="applyModePanel" value="current" checked>
-                                    <span>Current</span>
-                                </label>
-                                <label class="radio-label">
-                                    <input type="radio" name="applyModePanel" value="all">
-                                    <span>ALL</span>
-                                </label>
+                            <!-- Device Details Section (mobile only) -->
+                            <div id="deviceDetailsMobile" class="device-details-mobile" style="display: none;">
+                                <div class="device-details-content">
+                                    <div class="detail-item">
+                                        <span class="detail-label">Activity:</span>
+                                        <span class="detail-value" id="mobileCurrentActivity">Idle</span>
+                                    </div>
+                                    <div class="detail-separator">|</div>
+                                    <div class="detail-item detail-queue-clickable" onclick="showQueueModal()" title="Click for full queue">
+                                        <span class="detail-label">Queue:</span>
+                                        <span class="detail-value" id="mobileQueueSummary">0</span>
+                                    </div>
+                                </div>
+                                <hr>
                             </div>
-
-                            <hr>
 
                             <!-- Function Controls -->
                             <div class="control-section collapsible-section">
@@ -219,17 +197,64 @@
                 </section>
             </div>
 
-            <!-- Recent Log - Spans full width on desktop -->
+            <!-- Log Section - Spans full width on desktop -->
             <div id="logSection" class="log-section">
                 <div class="card">
-                    <h4>Recent Log</h4>
-                    <div class="log-container" id="logContainer">
-                        <pre id="logText">No log entries</pre>
+                    <!-- Tab Header -->
+                    <div class="log-tabs">
+                        <button class="log-tab active" data-tab="recent" onclick="switchLogTab('recent')">Recent Log</button>
+                        <button class="log-tab" data-tab="debug" onclick="switchLogTab('debug')">Debug Logs</button>
+                        <button class="log-popout-btn" id="logPopoutBtn" title="Open in new window" onclick="popoutDebugLogs()" style="display: none;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                <polyline points="15 3 21 3 21 9"></polyline>
+                                <line x1="10" y1="14" x2="21" y2="3"></line>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- Recent Log Tab Content -->
+                    <div class="log-tab-content active" id="recentLogTab">
+                        <div class="log-container" id="logContainer">
+                            <pre id="logText">No log entries</pre>
+                        </div>
+                    </div>
+
+                    <!-- Debug Logs Tab Content -->
+                    <div class="log-tab-content" id="debugLogTab">
+                        <div class="debug-log-viewer">
+                            <!-- Session Selector -->
+                            <div class="debug-log-header">
+                                <select id="debugSessionSelect" onchange="loadDebugSession()">
+                                    <option value="">Select a session...</option>
+                                </select>
+                                <span id="debugSessionInfo" class="debug-session-info"></span>
+                            </div>
+                            <!-- Log Entries Container -->
+                            <div class="debug-log-container" id="debugLogContainer">
+                                <div class="debug-log-placeholder">Select a session to view debug logs with screenshots</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
     </main>
+
+    <!-- Queue Details Modal -->
+    <div id="queueModal" class="modal" style="display: none;">
+        <div class="modal-content modal-narrow">
+            <div class="modal-header">
+                <h3>Command Queue</h3>
+                <button class="modal-close" onclick="closeQueueModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="queueModalContent" class="queue-modal-content">
+                    <div class="queue-empty">No commands in queue</div>
+                </div>
+            </div>
+        </div>
+    </div>
 
 </body>
 </html>

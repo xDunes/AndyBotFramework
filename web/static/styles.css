@@ -45,8 +45,7 @@ html {
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-        'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     background-color: var(--bg-color);
     color: var(--text-primary);
     line-height: 1.6;
@@ -137,6 +136,129 @@ body {
 .status-indicator.stale {
     background: var(--warning-color);
     box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+}
+
+/* Device Details - Desktop (in header) */
+.device-details-inline {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.8rem;
+    flex: 1;
+    margin: 0 1rem;
+}
+
+/* Device Details - Mobile (in control panel) */
+.device-details-mobile {
+    display: none !important; /* Hidden on desktop */
+    margin-bottom: 0;
+}
+
+.device-details-content {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    justify-content: center;
+    font-size: 0.9rem;
+    padding: 0.5rem 0;
+}
+
+.detail-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.detail-label {
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-size: 0.85rem;
+}
+
+.detail-value {
+    color: var(--text-primary);
+    font-family: 'Courier New', monospace;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.detail-separator {
+    color: var(--border-color);
+    font-weight: 300;
+}
+
+.detail-queue-clickable {
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    transition: background 0.2s;
+    position: relative;
+}
+
+.detail-queue-clickable:hover {
+    background: var(--hover-color);
+}
+
+.queue-preview {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 0.25rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.5rem;
+    font-size: 0.7rem;
+    white-space: nowrap;
+    display: none;
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.detail-queue-clickable:hover .queue-preview {
+    display: block;
+}
+
+.queue-preview-item {
+    color: var(--text-secondary);
+    margin-bottom: 0.25rem;
+}
+
+.queue-preview-item:last-child {
+    margin-bottom: 0;
+}
+
+.modal-narrow {
+    max-width: 500px;
+}
+
+.queue-modal-content {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.queue-command {
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-color);
+    margin-bottom: 0.5rem;
+    border-radius: 4px;
+}
+
+.queue-command:last-child {
+    margin-bottom: 0;
+}
+
+.queue-command-desc {
+    color: var(--text-primary);
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+}
+
+.queue-command-time {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-family: 'Courier New', monospace;
 }
 
 .settings-panel {
@@ -337,11 +459,12 @@ body {
     margin-bottom: 0.75rem;
 }
 
-/* Header apply mode - hidden on desktop, shown on mobile */
+/* Header apply mode - shown on both desktop and mobile */
 .header-apply-mode {
-    display: none;
+    display: flex;
     margin-bottom: 0;
     margin-left: auto;
+    gap: 0.75rem;
 }
 
 .control-section {
@@ -472,6 +595,66 @@ body {
     width: 100%;
 }
 
+/* Log Tabs */
+.log-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.log-tab {
+    padding: 0.5rem 1rem;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.log-tab:hover {
+    color: var(--text-primary);
+    background: var(--bg-color);
+}
+
+.log-tab.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+}
+
+.log-popout-btn {
+    margin-left: auto;
+    padding: 0.375rem 0.5rem;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    transition: all 0.2s;
+}
+
+.log-popout-btn:hover {
+    background: var(--bg-color);
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+/* Log Tab Content */
+.log-tab-content {
+    display: none;
+}
+
+.log-tab-content.active {
+    display: block;
+}
+
 /* Log Container */
 .log-container {
     background: var(--bg-color);
@@ -488,6 +671,127 @@ body {
     margin: 0;
     white-space: pre-wrap;
     word-wrap: break-word;
+}
+
+/* Debug Log Viewer */
+.debug-log-viewer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.debug-log-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.debug-log-header select {
+    flex: 0 0 auto;
+    min-width: 250px;
+    padding: 0.375rem 0.5rem;
+    font-size: 0.8125rem;
+}
+
+.debug-session-info {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-family: 'Courier New', monospace;
+}
+
+.debug-log-container {
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 0.5rem;
+}
+
+.debug-log-placeholder {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 2rem;
+    font-size: 0.875rem;
+}
+
+/* Debug Log Entry */
+.debug-log-entry {
+    border-bottom: 1px solid var(--border-color);
+    padding: 0.5rem 0;
+    margin-bottom: 0.5rem;
+}
+
+.debug-log-entry:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+
+.debug-log-entry-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+}
+
+.debug-log-entry-number {
+    font-size: 0.7rem;
+    color: var(--primary-color);
+    font-weight: 600;
+    font-family: 'Courier New', monospace;
+}
+
+.debug-log-entry-time {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    font-family: 'Courier New', monospace;
+}
+
+.debug-log-entry-message {
+    font-family: 'Courier New', monospace;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    margin-bottom: 0.25rem;
+}
+
+.debug-log-entry-screenshot {
+    margin-top: 0.5rem;
+    max-width: 300px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.debug-log-entry-screenshot:hover {
+    transform: scale(1.02);
+    box-shadow: var(--shadow-lg);
+}
+
+/* Loading indicator for debug logs */
+.debug-log-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 2rem;
+    color: var(--text-secondary);
+}
+
+.debug-log-loading-spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--border-color);
+    border-top-color: var(--primary-color);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 
 /* Screenshot */
@@ -601,6 +905,11 @@ body {
     color: var(--text-secondary);
     text-align: center;
     padding: 1rem 0.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 9 / 16; /* Match 540:960 aspect ratio */
+    width: 100%;
 }
 
 /* Form Elements */
@@ -758,6 +1067,15 @@ input[type="radio"] {
     .header-apply-mode input[type="radio"] {
         width: 14px;
         height: 14px;
+    }
+
+    /* Hide header device details on mobile, show control panel version */
+    .device-details-inline {
+        display: none !important;
+    }
+
+    .device-details-mobile {
+        display: block !important;
     }
 
     .layout {
@@ -1062,4 +1380,146 @@ input[type="radio"] {
 .device-item,
 .card {
     animation: fadeIn 0.3s ease-out;
+}
+
+/* =============================================================================
+   DETAILS MODAL
+   ============================================================================= */
+
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0, 0, 0, 0.6);
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+}
+
+.modal-content {
+    background-color: var(--card-bg);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg);
+    max-width: 600px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 1.25rem;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 2rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-close:hover {
+    color: var(--text-primary);
+}
+
+.modal-body {
+    padding: 20px;
+}
+
+.details-section {
+    margin-bottom: 24px;
+}
+
+.details-section:last-child {
+    margin-bottom: 0;
+}
+
+.details-section h4 {
+    margin: 0 0 12px 0;
+    color: var(--text-primary);
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.current-activity {
+    background-color: var(--input-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.activity-label {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.activity-text {
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 600;
+    flex: 1;
+}
+
+.command-queue {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.queue-empty {
+    text-align: center;
+    padding: 20px;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.queue-command {
+    background-color: var(--input-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 8px;
+}
+
+.queue-command:last-child {
+    margin-bottom: 0;
+}
+
+.queue-command-desc {
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+.queue-command-time {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    display: flex;
+    justify-content: space-between;
 }

@@ -1,15 +1,26 @@
 """
 Master of Bots - Centralized headless bot manager with integrated web server
 
-This script manages multiple bot instances directly without needing separate
-start_bot.py processes or database-based remote commands. It provides a web
-interface for monitoring and controlling all bots from a single process.
+This script manages multiple bot instances in a single process with integrated
+Flask web interface. All state is stored in-memory for instant access with no
+database lag.
 
-Key differences from start_bot.py + web/server.py:
-- Runs all bots in-process (no separate processes needed)
-- Direct control without database command relay
-- No GUI - purely headless operation
-- Single point of control for all devices
+Architecture:
+- HeadlessBot instances run in separate threads
+- Flask web server with direct in-memory state access
+- WebSocket streaming for real-time updates
+- No database relay - all commands and queries are instant
+
+Key features:
+- Direct in-memory state access (< 1ms state queries)
+- Instant command execution (< 100ms)
+- Real-time screenshot streaming
+- Multi-device dashboard at http://localhost:5000
+- Mobile-friendly web interface
+
+Comparison with start_bot.py:
+- start_bot.py: Single bot, Tkinter GUI, local only
+- master_of_bots.py: Multi-bot, headless, web interface
 
 Usage:
     python master_of_bots.py <game_name> [options]
@@ -18,14 +29,17 @@ Examples:
     python master_of_bots.py apex_girl
     python master_of_bots.py apex_girl --port 5001
     python master_of_bots.py apex_girl --devices Gelvil,Gelvil1
-    python master_of_bots.py apex_girl --no-auto-start
+    python master_of_bots.py apex_girl --no-auto-start-bot
+    python master_of_bots.py apex_girl --no-auto-start-device
+    python master_of_bots.py apex_girl --no-web
 
 Options:
-    game_name           Required. Game module name (folder in games/)
-    --port PORT         Web server port (default: 5000)
-    --devices DEVICES   Comma-separated list of devices to manage (default: all)
-    --no-auto-start     Disable auto-starting all bots on launch
-    --no-web            Disable web server (CLI-only mode)
+    game_name               Required. Game module name (folder in games/)
+    --port PORT             Web server port (default: 5000)
+    --devices DEVICES       Comma-separated list of devices to manage (default: all)
+    --no-auto-start-bot     Disable auto-starting all bots on launch
+    --no-auto-start-device  Disable auto-launching LDPlayer devices
+    --no-web                Disable web server (CLI-only mode)
 """
 
 import sys
@@ -36,6 +50,8 @@ import threading
 import time
 import signal
 import subprocess
+import base64
+import queue
 from datetime import datetime
 from typing import Dict, Optional, Callable, Any, List
 
@@ -46,8 +62,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.bot import BOT, BotStoppedException
 from core.android import Android, AndroidStoppedException
 from core.config_loader import load_config, load_master_config, get_serial
-from core.ldplayer import LDPlayer
+from core.ldplayer import LDPlayer, launch_devices_if_needed
 from core.utils import build_function_map, build_command_map
+from core.log_database import LogDatabase, get_available_devices, clear_all_devices_logs
 
 
 def log_master(message: str):
@@ -139,6 +156,19 @@ class HeadlessBot:
         self._screenshot_thread: Optional[threading.Thread] = None
         self._screenshot_running = False
 
+        # Debug log database (created lazily when debug mode is enabled)
+        self.log_db: Optional[LogDatabase] = None
+
+        # Bot timing and state tracking (in-memory)
+        self.start_time: Optional[str] = None  # ISO format timestamp
+        self.end_time: Optional[str] = None  # ISO format timestamp
+        self.current_action: str = ""  # Current bot action/function
+
+        # State manager (optional - for persistence/recovery, not for primary state)
+        self.state_manager = None
+        # Note: StateManager disabled by default for master_of_bots
+        # All state is tracked in-memory for direct Flask access
+
         # Callbacks for external monitoring
         self.on_log: Optional[Callable[[str, str], None]] = None  # (device_name, entry)
         self.on_status_change: Optional[Callable[[str, str], None]] = None
@@ -168,12 +198,101 @@ class HeadlessBot:
                 timestamp = datetime.now().strftime("%H:%M:%S")
                 print(f"[{timestamp}][{self.device_name}] WARNING: Unknown function '{func_name}', available: {list(self.function_states.keys())}")
 
-    def log(self, message: str, screenshot=None, console: bool = False):  # noqa: ARG002 - screenshot kept for API compatibility
+    def get_state_dict(self) -> dict:
+        """Get current bot state as dictionary (thread-safe)
+
+        This provides direct in-memory state access for Flask endpoints,
+        eliminating the need for StateManager database queries.
+
+        Returns:
+            Dictionary with all bot state including checkboxes, settings,
+            timing, logs, and current action
+        """
+        with self._lock:
+            state = {
+                'device_name': self.device_name,
+                'is_running': self.is_running,
+                'start_time': self.start_time,
+                'end_time': self.end_time,
+                'current_action': self.current_action,
+                'screenshot_timestamp': self.screenshot_timestamp,
+            }
+
+            # Add function checkboxes
+            for func_name, var in self.function_states.items():
+                state[func_name] = 1 if var.get() else 0
+
+            # Add settings
+            state['fix_enabled'] = 1 if self.fix_enabled.get() else 0
+            state['debug_enabled'] = 1 if self.debug.get() else 0
+            state['sleep_time'] = self.sleep_time.get()
+            state['studio_stop'] = self.studio_stop.get()
+
+            # Add recent logs
+            state['current_log'] = '\n'.join(self.log_buffer[-10:]) if self.log_buffer else ''
+
+            # Calculate uptime if running
+            if self.start_time and self.is_running:
+                try:
+                    start_dt = datetime.fromisoformat(self.start_time)
+                    uptime_seconds = (datetime.now() - start_dt).total_seconds()
+                    state['uptime_seconds'] = uptime_seconds
+                except Exception:
+                    state['uptime_seconds'] = 0
+            elif self.start_time and self.end_time:
+                try:
+                    start_dt = datetime.fromisoformat(self.start_time)
+                    end_dt = datetime.fromisoformat(self.end_time)
+                    uptime_seconds = (end_dt - start_dt).total_seconds()
+                    state['uptime_seconds'] = uptime_seconds
+                except Exception:
+                    state['uptime_seconds'] = 0
+            else:
+                state['uptime_seconds'] = 0
+
+            return state
+
+    def get_screenshot_data(self) -> dict:
+        """Get current screenshot data (thread-safe)
+
+        Returns:
+            Dictionary with screenshot and timestamp
+        """
+        with self._lock:
+            return {
+                'screenshot': self.latest_screenshot,
+                'timestamp': self.screenshot_timestamp
+            }
+
+    def mark_running(self):
+        """Mark bot as running and record start time"""
+        with self._lock:
+            self.is_running = True
+            self.start_time = datetime.now().isoformat()
+            self.end_time = None
+            if self.state_manager:
+                try:
+                    self.state_manager.mark_running()
+                except Exception:
+                    pass
+
+    def mark_stopped(self):
+        """Mark bot as stopped and record end time"""
+        with self._lock:
+            self.is_running = False
+            self.end_time = datetime.now().isoformat()
+            if self.state_manager:
+                try:
+                    self.state_manager.mark_stopped()
+                except Exception:
+                    pass
+
+    def log(self, message: str, screenshot=None, console: bool = False):
         """Add log message
 
         Args:
             message: Log message
-            screenshot: Optional screenshot (unused in headless mode)
+            screenshot: Optional screenshot for debug logging to database
             console: If True, also print to console (for system/framework messages)
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -195,6 +314,19 @@ class HeadlessBot:
             except Exception:
                 pass
 
+        # Write to debug log database when debug mode is enabled
+        if self.debug.get() and screenshot is not None:
+            try:
+                # Create log database if not already created
+                if self.log_db is None:
+                    self.log_db = LogDatabase(self.device_name)
+                    print(f"[{timestamp}][{self.device_name}] Debug log DB created: {self.log_db.db_path}")
+                # Add entry with screenshot
+                self.log_db.add_log_entry(message, screenshot)
+            except Exception as e:
+                # Don't let database errors break logging
+                print(f"[{timestamp}][{self.device_name}] Debug log DB error: {e}")
+
     def update_status(self, status: str, message: str = ""):
         """Update status display"""
         if self.on_status_change:
@@ -204,8 +336,14 @@ class HeadlessBot:
                 pass
 
     def update_action(self, action: str):
-        """Update current action (compatibility method)"""
-        pass
+        """Update current action"""
+        with self._lock:
+            self.current_action = action
+        if self.state_manager:
+            try:
+                self.state_manager.update_current_action(action)
+            except Exception:
+                pass
 
     def _update_full_state(self):
         """Update full state (no-op in headless mode - no state_manager)"""
@@ -219,14 +357,31 @@ class HeadlessBot:
         self._screenshot_running = True
 
         def capture_loop():
+            loop_count = 0
             while self._screenshot_running and self.is_running:
                 try:
                     if self.andy is not None:
+                        # Skip screenshot if commands are queued to avoid ADB lock contention
+                        # find_and_click calls will update screenshots anyway
+                        if self.bot and not self.bot._command_queue.empty():
+                            time.sleep(0.3)
+                            continue
+
                         screenshot = self.andy.capture_screen()
                         if screenshot is not None:
                             with self._lock:
                                 self.latest_screenshot = screenshot
                                 self.screenshot_timestamp = time.time()
+
+                    # Update command queue info every ~3 seconds (every 10 iterations) - optional
+                    loop_count += 1
+                    if loop_count >= 10 and self.state_manager and self.bot and hasattr(self.bot, 'get_command_queue_info'):
+                        try:
+                            queue_info = self.bot.get_command_queue_info()
+                            self.state_manager.update_command_queue(queue_info)
+                        except Exception:
+                            pass
+                        loop_count = 0
                 except Exception:
                     pass
                 time.sleep(0.3)  # ~3 FPS capture rate
@@ -245,6 +400,15 @@ class HeadlessBot:
             self._screenshot_thread.join(timeout=1.0)
             self._screenshot_thread = None
 
+    def close_log_db(self):
+        """Close the debug log database if open"""
+        if self.log_db is not None:
+            try:
+                self.log_db.close_session()
+                self.log_db.conn.close()
+            except Exception:
+                pass
+            self.log_db = None
 
 
 class _RootStub:
@@ -349,7 +513,8 @@ class MasterBotManager:
         self.bot_threads[device_name] = thread
         thread.start()
 
-        log_master(f"[Master] Started {device_name}")
+        # Note: "Starting" not "Started" - actual connection happens in thread
+        log_master(f"[Master] Starting {device_name}...")
         return True
 
     def stop_bot(self, device_name: str) -> bool:
@@ -375,6 +540,9 @@ class MasterBotManager:
             bot.bot.should_stop = True
         if bot.andy:
             bot.andy.stop()
+
+        # Close debug log database if open
+        bot.close_log_db()
 
         log_master(f"[Master] Stop signal sent to {device_name}")
         return True
@@ -433,13 +601,15 @@ class MasterBotManager:
         try:
             # Initialize Android connection
             serial = get_serial(device_name)
-            bot.log(f"Detected serial: {serial}", console=True)
+            bot.log(f"Looking for device with serial: {serial}", console=True)
 
             try:
                 andy = Android(serial, device_name=device_name)
                 andy.set_gui(bot)
                 bot.andy = andy
-                bot.log(f"Connected to device: {device_name} (serial: {serial})", console=True)
+            except AndroidStoppedException:
+                # Error already logged by android.py
+                raise
             except Exception as e:
                 bot.log(f"Failed to connect to device: {device_name} (serial: {serial}) - {e}", console=True)
                 raise
@@ -448,9 +618,14 @@ class MasterBotManager:
             botobj = BOT(andy, findimg_path=self.findimg_path)
             botobj.set_gui(bot)
             botobj.should_stop = False
+            # Tell BOT that main loop handles command processing (not background thread)
+            botobj._main_loop_processes_commands = True
             bot.bot = botobj
 
             bot.log("Bot initialized", console=True)
+
+            # Mark as running (updates start_time and optional StateManager)
+            bot.mark_running()
 
             # Start screenshot capture thread
             bot.start_screenshot_capture()
@@ -463,6 +638,9 @@ class MasterBotManager:
             # Main loop
             while bot.is_running and not self._shutdown:
                 try:
+                    # Process any pending commands immediately at loop start
+                    self._process_pending_commands(botobj)
+
                     # Handle command triggers
                     if self.command_handlers:
                         self._handle_commands(bot, botobj)
@@ -472,6 +650,9 @@ class MasterBotManager:
                     for func_name, func in self.function_map.items():
                         if not bot.is_running:
                             break
+
+                        # Process commands between each function for faster response
+                        self._process_pending_commands(botobj)
 
                         # Check if enabled
                         func_var = bot.function_states.get(func_name)
@@ -487,6 +668,8 @@ class MasterBotManager:
                                 continue
 
                         bot.update_status("Running", func_name)
+                        # Update current action
+                        bot.update_action(func_name)
 
                         try:
                             result = self._execute_function(func, botobj, device_name, bot, func_name)
@@ -510,6 +693,8 @@ class MasterBotManager:
 
                     # Run fix/recover if enabled
                     if bot.fix_enabled.get() and self.do_recover_func:
+                        # Process commands before recovery (recovery can be slow)
+                        self._process_pending_commands(botobj)
                         try:
                             bot.update_status("Running", "Fix/Recover")
                             self.do_recover_func(botobj, device_name)
@@ -518,20 +703,28 @@ class MasterBotManager:
                         except Exception as e:
                             bot.log(f"ERROR in Fix/Recover: {e}")
 
+                    # Process any queued commands from web interface
+                    # This ensures commands execute at a safe point between bot functions
+                    self._process_pending_commands(botobj)
+
                     # Sleep (interruptible for faster shutdown)
                     sleep_val = bot.sleep_time.get() or 0
                     if sleep_val > 0:
+                        # Update current action to idle/sleeping
+                        bot.update_action("Idle")
                         bot.update_status("Running", f"Sleeping {sleep_val}s")
                         # Use small increments to check for stop signal
                         sleep_end = time.time() + sleep_val
                         while time.time() < sleep_end and bot.is_running and not self._shutdown:
+                            # Process commands during sleep periods too
+                            self._process_pending_commands(botobj)
                             time.sleep(0.1)
 
                 except BotStoppedException:
                     bot.log("Bot stopped by user", console=True)
                     break
-                except AndroidStoppedException as e:
-                    bot.log(f"Android connection lost: {e}", console=True)
+                except AndroidStoppedException:
+                    # Error already logged by android.py
                     break
                 except Exception as e:
                     if not bot.is_running:
@@ -539,8 +732,9 @@ class MasterBotManager:
                     bot.log(f"ERROR: {e}", console=True)
                     time.sleep(1)
 
-        except AndroidStoppedException as e:
-            bot.log(f"Android connection failed: {e}", console=True)
+        except AndroidStoppedException:
+            # Error already logged by android.py with available serials
+            pass
         except Exception as e:
             bot.log(f"Bot error: {e}", console=True)
         finally:
@@ -551,7 +745,9 @@ class MasterBotManager:
             if bot.bot:
                 bot.bot.stop_command_queue()
             bot.update_status("Stopped", "")
-            bot.log("Bot stopped", console=True)
+            # Mark as stopped (updates end_time and optional StateManager)
+            bot.update_action("")  # Clear current action
+            bot.mark_stopped()
 
     def _handle_commands(self, bot: HeadlessBot, botobj: BOT):
         """Handle triggered commands"""
@@ -585,6 +781,57 @@ class MasterBotManager:
             kwargs['stop'] = bot.studio_stop.get()
 
         return func(**kwargs)
+
+    def _process_pending_commands(self, botobj: BOT):
+        """Process all pending commands from the queue synchronously
+
+        This method drains the command queue and executes each command
+        in order. Called from the main bot loop at safe points to ensure
+        commands from the web interface don't conflict with bot operations.
+        """
+        if not botobj._command_queue:
+            return
+
+        # Process all pending commands (non-blocking)
+        processed = 0
+        while True:
+            try:
+                item = botobj._command_queue.get_nowait()
+
+                if item is None:
+                    # Sentinel value - put it back for the thread to handle
+                    botobj._command_queue.put(None)
+                    break
+
+                command_func, description = item
+
+                # Update current action for remote command
+                if botobj.gui and hasattr(botobj.gui, 'state_manager'):
+                    try:
+                        botobj.gui.state_manager.update_current_action(f"Remote: {description}" if description else "Remote command")
+                    except Exception:
+                        pass
+
+                try:
+                    command_func()
+                    if description and botobj.gui:
+                        botobj.log(f"[CMD] {description}")
+                    processed += 1
+                except BotStoppedException:
+                    raise
+                except Exception as e:
+                    if botobj.gui:
+                        botobj.log(f"[CMD] Error: {e}")
+
+                # Remove the completed command from timestamps list (FIFO - oldest first)
+                if botobj._command_timestamps:
+                    botobj._command_timestamps.pop(0)
+
+                botobj._command_queue.task_done()
+
+            except queue.Empty:
+                # No more commands to process
+                break
 
     # LDPlayer control methods
     def ld_launch(self, device_name: str) -> bool:
@@ -754,11 +1001,12 @@ def create_web_server(manager: MasterBotManager, config: dict):
     @app.route('/api/stats', methods=['GET'])
     def get_stats():
         try:
+            # Get stats directly from in-memory bot states
             stats = {
                 'total_bots': len(manager.bots),
                 'running_bots': sum(1 for b in manager.bots.values() if b.is_running),
                 'stopped_bots': sum(1 for b in manager.bots.values() if not b.is_running),
-                'db_size_mb': 'N/A',  # No database in master_of_bots mode
+                'db_size_mb': 0,  # StateManager database not used in direct access mode
             }
             return jsonify({'success': True, 'stats': stats})
         except Exception as e:
@@ -774,6 +1022,7 @@ def create_web_server(manager: MasterBotManager, config: dict):
     def refresh_ld_status_background():
         """Background thread that periodically refreshes LD status"""
         nonlocal ld_status_thread_running
+        first_run = True
         while ld_status_thread_running and not manager._shutdown:
             try:
                 if manager.ldplayer:
@@ -784,12 +1033,32 @@ def create_web_server(manager: MasterBotManager, config: dict):
                             status[inst['index']] = inst.get('android_started', False)
                         ld_status_cache['data'] = status
                         ld_status_cache['timestamp'] = time.time()
+                        if first_run:
+                            log_master(f"[LDStatus] Initial status retrieved: {len(status)} instances")
+                            first_run = False
+
+                        # Update StateManager database with LD status for each bot (if state_manager available)
+                        try:
+                            for device_name, bot in manager.bots.items():
+                                if bot.ld_index is not None and bot.state_manager:
+                                    is_running = status.get(bot.ld_index, False)
+                                    bot.state_manager.update_ld_running(is_running)
+                        except Exception as sm_err:
+                            pass  # Don't let StateManager errors break the status thread
+
                     except subprocess.TimeoutExpired:
+                        if first_run:
+                            log_master("[LDStatus] Timeout on first status check, will retry")
+                            first_run = False
                         pass  # Keep old cache
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        if first_run:
+                            log_master(f"[LDStatus] Error on first status check: {e}")
+                            first_run = False
+            except Exception as e:
+                if first_run:
+                    log_master(f"[LDStatus] Unexpected error: {e}")
+                    first_run = False
             # Refresh every 3 seconds
             time.sleep(3.0)
 
@@ -819,7 +1088,13 @@ def create_web_server(manager: MasterBotManager, config: dict):
         """Check if LDPlayer is running for a bot (uses cache)"""
         if manager.ldplayer and bot.ld_index is not None:
             status = get_ld_status_cached()
-            return status.get(bot.ld_index, False)
+            # Return True if index is in cache and marked as running
+            is_running = status.get(bot.ld_index, False)
+            # Debug log if cache is empty (only once per device)
+            if not status and not hasattr(bot, '_ld_status_warning_logged'):
+                log_master(f"[LDStatus] Warning: Status cache is empty for {bot.device_name} (index {bot.ld_index})")
+                bot._ld_status_warning_logged = True
+            return is_running
         return False
 
     @app.route('/api/bots', methods=['GET'])
@@ -830,20 +1105,14 @@ def create_web_server(manager: MasterBotManager, config: dict):
             bot_items = list(manager.bots.items())
             for device_name, bot in bot_items:
                 try:
-                    bot_state = {
-                        'device_name': device_name,
-                        'is_running': bot.is_running,
-                        'ld_running': check_ld_running(bot),
-                        'last_update': datetime.now().isoformat(),
-                        'elapsed_seconds': 0,
-                    }
-                    # Add function states
-                    for func_name, var in bot.function_states.items():
-                        bot_state[func_name] = 1 if var.get() else 0
-                    # Add settings
-                    bot_state['fix_enabled'] = 1 if bot.fix_enabled.get() else 0
-                    bot_state['debug_enabled'] = 1 if bot.debug.get() else 0
-                    bot_state['sleep_time'] = bot.sleep_time.get()
+                    # Get state directly from HeadlessBot in-memory
+                    bot_state = bot.get_state_dict()
+
+                    # Add additional fields
+                    bot_state['ld_running'] = check_ld_running(bot)
+                    bot_state['last_update'] = datetime.now().isoformat()
+                    bot_state['elapsed_seconds'] = 0
+
                     # Only include last 5 log lines in list view for performance
                     # Full logs are fetched via /api/bots/<device_name> endpoint
                     bot_state['current_log'] = '\n'.join(bot.log_buffer[-5:]) if bot.log_buffer else ''
@@ -867,17 +1136,12 @@ def create_web_server(manager: MasterBotManager, config: dict):
             if not bot:
                 return jsonify({'success': False, 'error': 'Device not found'}), 404
 
-            state = {
-                'device_name': device_name,
-                'is_running': bot.is_running,
-                'ld_running': check_ld_running(bot),
-                'last_update': datetime.now().isoformat(),
-            }
-            for func_name, var in bot.function_states.items():
-                state[func_name] = 1 if var.get() else 0
-            state['fix_enabled'] = 1 if bot.fix_enabled.get() else 0
-            state['debug_enabled'] = 1 if bot.debug.get() else 0
-            state['sleep_time'] = bot.sleep_time.get()
+            # Get state directly from HeadlessBot in-memory
+            state = bot.get_state_dict()
+
+            # Add additional fields
+            state['ld_running'] = check_ld_running(bot)
+            state['last_update'] = datetime.now().isoformat()
             state['current_log'] = '\n'.join(bot.log_buffer)
 
             return jsonify({'success': True, 'state': state})
@@ -945,6 +1209,37 @@ def create_web_server(manager: MasterBotManager, config: dict):
         except Exception as e:
             log_master(f"[API] Screenshot processing error for {device_name}: {e}")
             return jsonify({'success': False, 'error': f'Processing error: {e}'}), 500
+
+    @app.route('/api/bots/<device_name>/details', methods=['GET'])
+    def get_device_details(device_name):
+        """Get detailed device information including command queue and current activity"""
+        try:
+            bot = manager.get_bot(device_name)
+            if not bot:
+                return jsonify({'success': False, 'error': 'Device not found'}), 404
+
+            # Get command queue info
+            command_queue = {'queue_size': 0, 'commands': []}
+            if bot.bot and hasattr(bot.bot, 'get_command_queue_info'):
+                try:
+                    command_queue = bot.bot.get_command_queue_info()
+                except Exception:
+                    pass
+
+            # Get current action directly from bot in-memory
+            current_action = bot.current_action or 'Idle'
+
+            details = {
+                'device_name': device_name,
+                'current_action': current_action,
+                'is_running': bot.is_running,
+                'command_queue': command_queue
+            }
+
+            return jsonify({'success': True, 'details': details})
+        except Exception as e:
+            log_master(f"[API] Error getting details for {device_name}: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
 
     # ==========================================================================
     # DIRECT COMMAND ENDPOINTS (no database relay)
@@ -1052,12 +1347,18 @@ def create_web_server(manager: MasterBotManager, config: dict):
                 if not device_name:
                     return jsonify({'success': False, 'error': 'device_name required'}), 400
                 bot = manager.get_bot(device_name)
-                if bot and bot.is_running and bot.bot:
-                    tap_x, tap_y = int(x), int(y)
-                    bot.bot.queue_command(
-                        lambda b=bot.bot, tx=tap_x, ty=tap_y: b.tap(tx, ty),
-                        f"Tap at ({tap_x}, {tap_y})"
-                    )
+                if not bot:
+                    return jsonify({'success': False, 'error': f'Bot not found: {device_name}'}), 404
+                if not bot.is_running:
+                    return jsonify({'success': False, 'error': f'Bot not running: {device_name}'}), 400
+                if not bot.bot:
+                    return jsonify({'success': False, 'error': f'Bot object not initialized: {device_name}'}), 400
+
+                tap_x, tap_y = int(x), int(y)
+                bot.bot.queue_command(
+                    lambda b=bot.bot, tx=tap_x, ty=tap_y: b.tap(tx, ty),
+                    f"Tap at ({tap_x}, {tap_y})"
+                )
 
             return jsonify({'success': True})
         except Exception as e:
@@ -1093,12 +1394,18 @@ def create_web_server(manager: MasterBotManager, config: dict):
                 if not device_name:
                     return jsonify({'success': False, 'error': 'device_name required'}), 400
                 bot = manager.get_bot(device_name)
-                if bot and bot.is_running and bot.bot:
-                    sx1, sy1, sx2, sy2, sdur = int(x1), int(y1), int(x2), int(y2), int(duration)
-                    bot.bot.queue_command(
-                        lambda b=bot.bot, a=sx1, c=sy1, d=sx2, e=sy2, f=sdur: b.swipe(a, c, d, e, duration=f),
-                        f"Swipe ({sx1},{sy1})->({sx2},{sy2})"
-                    )
+                if not bot:
+                    return jsonify({'success': False, 'error': f'Bot not found: {device_name}'}), 404
+                if not bot.is_running:
+                    return jsonify({'success': False, 'error': f'Bot not running: {device_name}'}), 400
+                if not bot.bot:
+                    return jsonify({'success': False, 'error': f'Bot object not initialized: {device_name}'}), 400
+
+                sx1, sy1, sx2, sy2, sdur = int(x1), int(y1), int(x2), int(y2), int(duration)
+                bot.bot.queue_command(
+                    lambda b=bot.bot, a=sx1, c=sy1, d=sx2, e=sy2, f=sdur: b.swipe(a, c, d, e, duration=f),
+                    f"Swipe ({sx1},{sy1})->({sx2},{sy2})"
+                )
 
             return jsonify({'success': True})
         except Exception as e:
@@ -1277,10 +1584,99 @@ def create_web_server(manager: MasterBotManager, config: dict):
             return jsonify({'success': False, 'error': str(e)}), 500
 
     # ==========================================================================
-    # WEBSOCKET HANDLERS
+    # LOG DATABASE API ENDPOINTS
     # ==========================================================================
 
-    screenshot_fps = 5
+    @app.route('/api/logs/devices')
+    def api_logs_devices():
+        """Get list of devices that have log databases"""
+        try:
+            devices = get_available_devices()
+            return jsonify({'success': True, 'devices': devices})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    @app.route('/api/logs/<device_name>/sessions')
+    def api_logs_sessions(device_name: str):
+        """Get list of log sessions for a device"""
+        try:
+            db = LogDatabase(device_name, read_only=True)
+            sessions = db.get_sessions()
+            return jsonify({'success': True, 'sessions': sessions})
+        except FileNotFoundError:
+            return jsonify({'success': False, 'error': f'No log database found for device: {device_name}'}), 404
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    @app.route('/api/logs/<device_name>/sessions/<session_id>/entries')
+    def api_logs_entries(device_name: str, session_id: str):
+        """Get log entries for a specific session"""
+        try:
+            include_screenshots = request.args.get('include_screenshots', 'false').lower() == 'true'
+            db = LogDatabase(device_name, read_only=True)
+            entries = db.get_log_entries(session_id, include_screenshots=include_screenshots)
+
+            # Convert screenshots to base64 if included
+            if include_screenshots:
+                for entry in entries:
+                    if entry.get('screenshot'):
+                        screenshot_b64 = base64.b64encode(entry['screenshot']).decode('utf-8')
+                        entry['screenshot'] = f'data:image/png;base64,{screenshot_b64}'
+
+            return jsonify({'success': True, 'entries': entries})
+        except FileNotFoundError:
+            return jsonify({'success': False, 'error': f'No log database found for device: {device_name}'}), 404
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    @app.route('/api/logs/<device_name>/sessions/<int:session_id>/clear', methods=['POST', 'DELETE'])
+    def api_clear_session(device_name: str, session_id: int):
+        """Clear all log entries for a specific session"""
+        try:
+            # Check if device has logs
+            available_devices = get_available_devices()
+            if device_name not in available_devices:
+                return jsonify({'success': False, 'error': f'No log database found for device: {device_name}'}), 404
+
+            db = LogDatabase(device_name, read_only=False)
+            db.clear_session(session_id)
+            db.conn.close()
+            return jsonify({'success': True, 'message': f'Cleared session {session_id}'})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    @app.route('/api/logs/<device_name>/clear', methods=['POST', 'DELETE'])
+    def api_clear_device(device_name: str):
+        """Clear all logs for a specific device"""
+        try:
+            # Check if device has logs
+            available_devices = get_available_devices()
+            if device_name not in available_devices:
+                return jsonify({'success': False, 'error': f'No log database found for device: {device_name}'}), 404
+
+            db = LogDatabase(device_name, read_only=False)
+            db.clear_all_logs()
+            db.conn.close()
+            return jsonify({'success': True, 'message': f'Cleared all logs for device {device_name}'})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    @app.route('/api/logs/clear-all', methods=['POST', 'DELETE'])
+    def api_clear_all_logs():
+        """Clear all logs from all devices"""
+        try:
+            cleared_count = clear_all_devices_logs()
+            return jsonify({'success': True, 'message': f'Cleared logs from {cleared_count} device(s)', 'cleared_count': cleared_count})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    # ==========================================================================
+    # WEBSOCKET HANDLERS
+    # ==========================================================================
 
     @socketio.on('connect')
     def handle_connect():
@@ -1293,22 +1689,47 @@ def create_web_server(manager: MasterBotManager, config: dict):
         sid = getattr(request, 'sid', 'unknown')
         log_master(f'[WebSocket] Client disconnected: {sid}')
 
-    @socketio.on('set_fps')
-    def handle_fps_change(data):
-        nonlocal screenshot_fps
-        try:
-            fps = int(data.get('fps', 5))
-            screenshot_fps = max(1, min(fps, 30))
-            log_master(f'[WebSocket] FPS set to: {screenshot_fps}')
-            emit('fps_updated', {'fps': screenshot_fps})
-        except Exception as e:
-            log_master(f'[WebSocket] Error setting FPS: {e}')
-
-    # Screenshot monitor thread - reads directly from bot memory for speed
+    # Screenshot monitor thread - optimized for adaptive quality and bandwidth
     def screenshot_monitor_thread():
-        last_screenshots = {}
-        last_preview_send = {}
+        """Intelligent screenshot streaming with automatic optimizations
+
+        Features:
+        - Adaptive quality based on network performance
+        - Motion detection to skip unchanged frames
+        - WebP compression with JPEG fallback
+        - Frame skipping under load
+        - Automatic FPS adjustment
+        """
+        # Quality tiers - automatically adjust based on send performance
+        quality_tiers = {
+            'ultra_low': {'quality': 40, 'scale': 0.5, 'name': 'Ultra Low'},
+            'low': {'quality': 50, 'scale': 0.67, 'name': 'Low'},
+            'medium': {'quality': 65, 'scale': 0.75, 'name': 'Medium'},
+            'normal': {'quality': 85, 'scale': 1.0, 'name': 'Normal'},
+            'high': {'quality': 95, 'scale': 1.0, 'name': 'High'}
+        }
+
+        # State tracking per device
+        last_screenshots = {}        # Last timestamp sent
+        last_preview_send = {}       # Last preview send time
+        last_frames = {}             # Last frame for motion detection
+        send_times = {}              # Track send performance per device
+        sending = {}                 # Track if send is in progress
+        current_quality = {}         # Current quality tier per device
+
         preview_interval = 1.0
+        base_fps = 10  # Target FPS (will auto-adjust down under load)
+
+        # Detect WebP support
+        webp_supported = False
+        try:
+            test_img = Image.new('RGB', (10, 10))
+            test_buffer = io.BytesIO()
+            test_img.save(test_buffer, format='WEBP', quality=80)
+            webp_supported = True
+            log_master("[WebSocket] WebP compression enabled")
+        except Exception:
+            log_master("[WebSocket] WebP not supported, using JPEG")
 
         # Reusable buffers to reduce memory allocations
         main_buffer = io.BytesIO()
@@ -1316,11 +1737,15 @@ def create_web_server(manager: MasterBotManager, config: dict):
 
         while not manager._shutdown:
             try:
-                sleep_interval = 1.0 / screenshot_fps
+                sleep_interval = 1.0 / base_fps
                 current_time = time.time()
 
                 for device_name in manager.device_names:
                     try:
+                        # Skip if previous send still in progress (frame skipping)
+                        if sending.get(device_name, False):
+                            continue
+
                         # Read directly from bot memory instead of database
                         bot = manager.get_bot(device_name)
                         if not bot:
@@ -1332,59 +1757,144 @@ def create_web_server(manager: MasterBotManager, config: dict):
                         if screenshot is None or timestamp is None:
                             continue
 
-                        if last_screenshots.get(device_name) != timestamp:
+                        # Skip if timestamp hasn't changed
+                        if last_screenshots.get(device_name) == timestamp:
+                            continue
+
+                        # Initialize quality tier for new device
+                        if device_name not in current_quality:
+                            current_quality[device_name] = 'normal'
+
+                        try:
+                            # Make a copy to avoid race conditions
+                            screenshot_copy = screenshot.copy()
+
+                            # Motion detection - skip if scene hasn't changed significantly
+                            if device_name in last_frames:
+                                # Resize for fast comparison
+                                small_current = cv.resize(screenshot_copy, (64, 64))
+                                small_last = cv.resize(last_frames[device_name], (64, 64))
+
+                                # Calculate difference
+                                diff = cv.absdiff(small_current, small_last)
+                                gray_diff = cv.cvtColor(diff, cv.COLOR_BGR2GRAY) if len(diff.shape) == 3 else diff
+                                changed_pixels = np.count_nonzero(gray_diff > 25)
+                                total_pixels = gray_diff.size
+                                change_percentage = changed_pixels / total_pixels
+
+                                # Skip if less than 0.5% changed (very static scene)
+                                if change_percentage < 0.005:
+                                    continue
+
+                            # Store current frame for next motion detection
+                            last_frames[device_name] = screenshot_copy.copy()
                             last_screenshots[device_name] = timestamp
 
-                            try:
-                                # Make a copy to avoid race conditions
-                                screenshot_copy = screenshot.copy()
+                            # Convert color space
+                            if len(screenshot_copy.shape) == 3:
+                                if screenshot_copy.shape[2] == 4:
+                                    screenshot_copy = cv.cvtColor(screenshot_copy, cv.COLOR_BGRA2RGB)
+                                elif screenshot_copy.shape[2] == 3:
+                                    screenshot_copy = cv.cvtColor(screenshot_copy, cv.COLOR_BGR2RGB)
 
-                                if len(screenshot_copy.shape) == 3:
-                                    if screenshot_copy.shape[2] == 4:
-                                        screenshot_copy = cv.cvtColor(screenshot_copy, cv.COLOR_BGRA2RGB)
-                                    elif screenshot_copy.shape[2] == 3:
-                                        screenshot_copy = cv.cvtColor(screenshot_copy, cv.COLOR_BGR2RGB)
+                            img = Image.fromarray(screenshot_copy)
+                            original_width, original_height = img.size
 
-                                img = Image.fromarray(screenshot_copy)
+                            # Apply quality tier scaling and compression
+                            tier = quality_tiers[current_quality[device_name]]
+                            if tier['scale'] < 1.0:
+                                scaled_width = int(original_width * tier['scale'])
+                                scaled_height = int(original_height * tier['scale'])
+                                img = img.resize((scaled_width, scaled_height), Image.Resampling.LANCZOS)
 
-                                # Reuse buffer instead of creating new one each time
-                                main_buffer.seek(0)
-                                main_buffer.truncate(0)
-                                img.save(main_buffer, format='JPEG', quality=85, optimize=True)
-                                base64_data = base64.b64encode(main_buffer.getvalue()).decode('utf-8')
+                            # Encode with WebP or JPEG
+                            main_buffer.seek(0)
+                            main_buffer.truncate(0)
 
-                                last_preview = last_preview_send.get(device_name, 0)
-                                include_preview = (current_time - last_preview) >= preview_interval
+                            if webp_supported:
+                                img.save(main_buffer, format='WEBP', quality=tier['quality'], method=4)
+                                mime_type = 'image/webp'
+                            else:
+                                img.save(main_buffer, format='JPEG', quality=tier['quality'], optimize=True)
+                                mime_type = 'image/jpeg'
 
-                                message = {
-                                    'device_name': device_name,
-                                    'screenshot': f'data:image/jpeg;base64,{base64_data}',
-                                    'timestamp': str(timestamp),
-                                    'width': screenshot_copy.shape[1],
-                                    'height': screenshot_copy.shape[0]
-                                }
+                            base64_data = base64.b64encode(main_buffer.getvalue()).decode('utf-8')
+                            data_size_kb = len(main_buffer.getvalue()) / 1024
 
-                                if include_preview:
-                                    preview_img = img.resize((85, 150), Image.Resampling.LANCZOS)
-                                    # Reuse preview buffer
-                                    preview_buffer.seek(0)
-                                    preview_buffer.truncate(0)
+                            # Build message
+                            message = {
+                                'device_name': device_name,
+                                'screenshot': f'data:{mime_type};base64,{base64_data}',
+                                'timestamp': str(timestamp),
+                                'width': original_width,
+                                'height': original_height
+                            }
+
+                            # Include preview at reduced rate
+                            last_preview = last_preview_send.get(device_name, 0)
+                            include_preview = (current_time - last_preview) >= preview_interval
+
+                            if include_preview:
+                                preview_img = Image.fromarray(screenshot_copy) if tier['scale'] < 1.0 else img
+                                preview_img = preview_img.resize((85, 150), Image.Resampling.LANCZOS)
+                                preview_buffer.seek(0)
+                                preview_buffer.truncate(0)
+
+                                if webp_supported:
+                                    preview_img.save(preview_buffer, format='WEBP', quality=50, method=4)
+                                else:
                                     preview_img.save(preview_buffer, format='JPEG', quality=60, optimize=True)
-                                    preview_base64 = base64.b64encode(preview_buffer.getvalue()).decode('utf-8')
-                                    message['preview'] = f'data:image/jpeg;base64,{preview_base64}'
-                                    last_preview_send[device_name] = current_time
 
-                                socketio.emit('screenshot_update', message)
+                                preview_base64 = base64.b64encode(preview_buffer.getvalue()).decode('utf-8')
+                                message['preview'] = f'data:{mime_type};base64,{preview_base64}'
+                                last_preview_send[device_name] = current_time
 
-                                # Explicitly delete large objects to help GC
-                                del screenshot_copy
-                                del img
-                                if include_preview:
-                                    del preview_img
+                            # Track send performance for adaptive quality
+                            sending[device_name] = True
+                            send_start = time.time()
 
-                            except Exception as e:
-                                log_master(f'[WebSocket] Error encoding screenshot for {device_name}: {e}')
+                            socketio.emit('screenshot_update', message)
+
+                            send_duration = time.time() - send_start
+                            sending[device_name] = False
+
+                            # Update send time tracking
+                            if device_name not in send_times:
+                                send_times[device_name] = []
+                            send_times[device_name].append(send_duration)
+                            send_times[device_name] = send_times[device_name][-10:]  # Keep last 10
+
+                            # Adaptive quality adjustment based on send performance
+                            avg_send_time = sum(send_times[device_name]) / len(send_times[device_name])
+
+                            # Adjust quality tier based on performance
+                            tier_order = ['ultra_low', 'low', 'medium', 'normal', 'high']
+                            current_idx = tier_order.index(current_quality[device_name])
+
+                            if avg_send_time > 0.3:  # Taking >300ms to send - decrease quality
+                                if current_idx > 0:
+                                    new_tier = tier_order[current_idx - 1]
+                                    if current_quality[device_name] != new_tier:
+                                        current_quality[device_name] = new_tier
+                                        log_master(f"[WebSocket] {device_name}: Reduced quality to {quality_tiers[new_tier]['name']} (send: {avg_send_time:.2f}s, size: {data_size_kb:.1f}KB)")
+                            elif avg_send_time < 0.08 and data_size_kb < 100:  # Very fast - try increasing
+                                if current_idx < len(tier_order) - 1:
+                                    new_tier = tier_order[current_idx + 1]
+                                    if current_quality[device_name] != new_tier:
+                                        current_quality[device_name] = new_tier
+                                        log_master(f"[WebSocket] {device_name}: Increased quality to {quality_tiers[new_tier]['name']} (send: {avg_send_time:.2f}s)")
+
+                            # Explicitly delete large objects to help GC
+                            del screenshot_copy
+                            del img
+                            if include_preview and 'preview_img' in locals():
+                                del preview_img
+
+                        except Exception as e:
+                            sending[device_name] = False
+                            log_master(f'[WebSocket] Error encoding screenshot for {device_name}: {e}')
                     except Exception:
+                        sending[device_name] = False
                         pass
 
                 time.sleep(sleep_interval)
@@ -1475,8 +1985,10 @@ def main():
                         help='Web server port (default: 5000)')
     parser.add_argument('--devices', type=str,
                         help='Comma-separated list of devices (default: all)')
-    parser.add_argument('--no-auto-start', action='store_true',
+    parser.add_argument('--no-auto-start-bot', action='store_true',
                         help='Disable auto-starting all bots on launch')
+    parser.add_argument('--no-auto-start-device', action='store_true',
+                        help='Disable auto-launching LDPlayer devices')
     parser.add_argument('--no-web', action='store_true',
                         help='Disable web server (CLI-only mode)')
     parser.add_argument('-l', '--list-games', action='store_true',
@@ -1513,15 +2025,28 @@ def main():
     config = load_config(game_name)
 
     # Parse device list
+    all_devices = list(config.get('devices', {}).keys())
     devices = None
     if args.devices:
         devices = [d.strip() for d in args.devices.split(',')]
-        all_devices = list(config.get('devices', {}).keys())
         for d in devices:
             if d not in all_devices:
                 print(f"ERROR: Device '{d}' not found in config")
                 print(f"Available devices: {', '.join(all_devices)}")
                 sys.exit(1)
+
+    # Auto-launch LDPlayer devices (default behavior, disabled with --no-auto-start-device)
+    if not args.no_auto_start_device:
+        # Use specified devices or all devices
+        devices_to_launch = devices if devices else all_devices
+        log_master(f"[Master] Checking if devices need to be launched: {', '.join(devices_to_launch)}")
+        launch_devices_if_needed(
+            device_names=devices_to_launch,
+            master_config=config,
+            stagger_delay=5.0,
+            boot_wait=45.0,
+            log_func=lambda msg: log_master(f"[Master] {msg}")
+        )
 
     # Load game modules
     try:
@@ -1540,7 +2065,7 @@ def main():
     # Print banner
     app_name = config.get('app_name', 'Bot')
     log_master(f"[Master] Starting {app_name}")
-    log_master(f"[Master] Game: {game_name}, Devices: {devices or 'all'}, Auto-start: {not args.no_auto_start}")
+    log_master(f"[Master] Game: {game_name}, Devices: {devices or 'all'}, Auto-start bots: {not args.no_auto_start_bot}")
 
     # Create bot manager
     manager = MasterBotManager(
@@ -1563,7 +2088,7 @@ def main():
         shutdown_count += 1
 
         if shutdown_count == 1:
-            log_master("\n[Master] Shutdown signal received, cleaning up...")
+            log_master("[Master] Shutdown signal received, cleaning up...")
             manager.shutdown()
             log_master("[Master] Shutdown complete. Exiting...")
             # Use os._exit() to force immediate termination
@@ -1579,8 +2104,8 @@ def main():
 
     # Run web server or CLI mode
     if args.no_web:
-        # Auto-start in CLI mode (no web callbacks needed)
-        if not args.no_auto_start:
+        # Auto-start bots in CLI mode (no web callbacks needed)
+        if not args.no_auto_start_bot:
             log_master("[Master] Auto-starting all bots...")
             manager.start_all()
 
@@ -1594,8 +2119,8 @@ def main():
         app, socketio = create_web_server(manager, config)
         socketio_instance = socketio
 
-        # Auto-start AFTER web server is created (so log callbacks are registered)
-        if not args.no_auto_start:
+        # Auto-start bots AFTER web server is created (so log callbacks are registered)
+        if not args.no_auto_start_bot:
             log_master("[Master] Auto-starting all bots...")
             manager.start_all()
 

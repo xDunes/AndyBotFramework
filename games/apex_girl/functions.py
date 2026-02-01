@@ -174,12 +174,11 @@ def adjust_level(bot, target):
 
 def do_concert(bot, device):
     """Send cars to concerts until all are sent or limit reached"""
-    if bot.gui and hasattr(bot.gui, 'debug') and bot.gui.debug.get():
-        log(f"DEBUG: do_concert() started for device {device}")
+    _ = device
+    log("do_concert() started")
 
     if not bot.find_and_click("screen-map", accuracy=0.99, tap=False) and not bot.find_and_click("screen-main", accuracy=0.99, tap=False):
-        if bot.gui and hasattr(bot.gui, 'debug') and bot.gui.debug.get():
-            log("DEBUG: do_concert() - not on map or main screen, exiting")
+        log("ERROR: Not on map or main screen - exiting")
         return
 
     bot.find_and_click("screen-main")
@@ -187,11 +186,17 @@ def do_concert(bot, device):
 
     counter = 0
     max_concert_loops = 10
+    log(f"Starting concert loop (max {max_concert_loops} iterations)")
 
     while counter < max_concert_loops:
         counter += 1
         result = get_active_cars(bot)
         log(f'Cars: {result["used"]}/{result["of"]}')
+
+        # Check if all cars are already sent
+        if result["used"] >= result["of"]:
+            log("All cars already sent - exiting concert loop")
+            break
 
         if result["used"] < result["of"]:
             if bot.find_and_click('outofenergy', tap=False, accuracy=0.99):
@@ -251,16 +256,30 @@ def do_concert(bot, device):
         else:
             break
 
+    log("Concert loop completed - checking if cars need to return")
     car_wait_counter = 0
     max_car_wait = 300
 
-    while get_active_cars(bot)["used"] != -2 and car_wait_counter < max_car_wait:
-        log("Waiting for cars to return...")
+    while car_wait_counter < max_car_wait:
+        # Check car status every 5 seconds to reduce spam
+        if car_wait_counter % 5 == 0:
+            result = get_active_cars(bot)
+            if result["used"] == -2:
+                log("All cars returned (no cars out)")
+                break
+
+        if car_wait_counter % 30 == 0:  # Log progress every 30 seconds
+            log(f"Waiting for cars to return... ({car_wait_counter}/{max_car_wait}s)")
+
         time.sleep(1)
         car_wait_counter += 1
 
     if car_wait_counter >= max_car_wait:
         log("WARNING: Timeout waiting for cars to return (5 minutes)")
+    elif car_wait_counter > 0:
+        log(f"Cars returned after {car_wait_counter} seconds")
+
+    log("do_concert() completed")
 
 
 def do_rally(bot, device):
@@ -538,14 +557,15 @@ def do_recover(bot, device):
     global _last_maintenance_confirm_time
     _ = device
 
-    on_map = bot.find_and_click("screen-map", accuracy=0.99, tap=False, sqdiff=True)
-    on_main = bot.find_and_click("screen-main", accuracy=0.99, tap=False, sqdiff=True)
+    screenshot = bot.screenshot()
+    on_map = bot.find_and_click("screen-map", accuracy=0.99, tap=False, sqdiff=True, screenshot=screenshot)
+    on_main = bot.find_and_click("screen-main", accuracy=0.99, tap=False, sqdiff=True, screenshot=screenshot)
 
     if on_map or on_main:
-        if bot.find_and_click("fixmapassist", accuracy=0.99, tap=False):
+        if bot.find_and_click("fixmapassist", accuracy=0.99, tap=False, screenshot=screenshot):
             bot.tap(250, 880)
             log("Recovery: Clicked away from Assist")
-        if bot.find_and_click("fixratingpopup", accuracy=0.99):
+        if bot.find_and_click("fixratingpopup", accuracy=0.99, screenshot=screenshot):
             log("Recovery: Exiting Rating Pop-up")
         return
 
@@ -556,47 +576,50 @@ def do_recover(bot, device):
 
     while not (on_map or on_main) and recovery_attempts < max_attempts:
         recovery_attempts += 1
+        screenshot = bot.screenshot()
 
         if bot.gui and hasattr(bot.gui, 'fix_enabled') and not bot.gui.fix_enabled.get():
             log("Recovery: Fix checkbox disabled - exiting")
             return
 
-        if bot.find_and_click("fixgroupgiftx", accuracy=0.99):
+        if bot.find_and_click("fixgroupgiftx", accuracy=0.99, screenshot=screenshot):
             log("Recovery: Closed group gift screen")
-        if bot.find_and_click("fixdecree", accuracy=0.99):
+        if bot.find_and_click("fixdecree", accuracy=0.99, screenshot=screenshot):
             log("Recovery: Closed Decree")
-        if bot.find_and_click("fixgroupback", accuracy=0.99):
+        if bot.find_and_click("fixgroupback", accuracy=0.99, screenshot=screenshot):
             log("Recovery: Clicked group back button")
-        if bot.find_and_click("fixmainad"):
+        if bot.find_and_click("fixmainad", screenshot=screenshot):
             log("Recovery: Closed ad popup")
-        if bot.find_and_click("fixgrouprallyback", accuracy=0.99):
+        if bot.find_and_click("fixgrouprallyback", accuracy=0.99, screenshot=screenshot):
             log("Recovery: Clicked rally back button")
-        if bot.find_and_click("fixgameclosed", accuracy=0.99):
+        if bot.find_and_click("fixgameclosed", accuracy=0.99, screenshot=screenshot):
             log("Recovery: Clicked open game")
-        if bot.find_and_click("fixcellphoneback", accuracy=0.99):
+        if bot.find_and_click("fixcellphoneback", accuracy=0.99, screenshot=screenshot):
             log("Recovery: Clicked Back on cellphone")
-        if bot.find_and_click("skip", tap=True, accuracy=0.92):
+        if bot.find_and_click("skip", tap=True, accuracy=0.92, screenshot=screenshot):
             log("Recovery: Clicked skip in studio")
-        if bot.find_and_click("claim", tap=True, accuracy=0.99):
+        if bot.find_and_click("claim", tap=True, accuracy=0.99, screenshot=screenshot):
             log("Recovery: Clicked claim in studio")
-        if bot.find_and_click("fixlater", tap=True, accuracy=0.99):
+        if bot.find_and_click("fixlater", tap=True, accuracy=0.99, screenshot=screenshot):
             log("Recovery: Clicked Later")
-        if bot.find_and_click("maintenanace-downloadnow", tap=True, accuracy=0.99):
+        if bot.find_and_click("maintenanace-downloadnow", tap=True, accuracy=0.99, screenshot=screenshot):
             log("Recovery: Clicked Maintenance Download Now")
 
         current_time = time.time()
         if current_time - _last_maintenance_confirm_time >= 60:
-            if bot.find_and_click("maintenanace-confirm", tap=True, accuracy=0.98):
+            if bot.find_and_click("maintenanace-confirm", tap=True, accuracy=0.98, screenshot=screenshot):
                 log("Recovery: Clicked Recovery Confirm")
                 _last_maintenance_confirm_time = current_time
 
-        if bot.find_and_click("fixceocard", accuracy=0.99, tap=False) or bot.find_and_click('settingswindow', accuracy=0.99, tap=False) or bot.find_and_click('fixdecree', accuracy=0.99, tap=False):
-            bot.tap(450, 850)
+        if bot.find_and_click("fixceocard", accuracy=0.99, tap=False, screenshot=screenshot) or bot.find_and_click('settingswindow', accuracy=0.99, tap=False, screenshot=screenshot) or bot.find_and_click('fixdecree', accuracy=0.99, tap=False, screenshot=screenshot):
+            if bot.find_and_click("fixceocardsettings", accuracy=0.99, screenshot=screenshot):
+                time.sleep(1)
+            bot.tap(450, 855)
             log("Recovery: Clicked away on CEO card or Send card window")
-        if bot.find_and_click("fixgenericback", accuracy=0.91):
+        if bot.find_and_click("fixgenericback", accuracy=0.91, screenshot=screenshot):
             log("Recovery: Clicked Back")
 
-        if bot.find_and_click("fixmaintenanceconfirm", accuracy=0.99):
+        if bot.find_and_click("fixmaintenanceconfirm", accuracy=0.99, screenshot=screenshot):
             log("Recovery: Maintenance detected - waiting 5 minutes")
             for _ in range(30):
                 time.sleep(10)
@@ -606,8 +629,9 @@ def do_recover(bot, device):
 
         time.sleep(0.1)
 
-        on_map = bot.find_and_click("screen-map", accuracy=0.99, tap=False)
-        on_main = bot.find_and_click("screen-main", accuracy=0.99, tap=False)
+        screenshot = bot.screenshot()
+        on_map = bot.find_and_click("screen-map", accuracy=0.99, tap=False, screenshot=screenshot)
+        on_main = bot.find_and_click("screen-main", accuracy=0.99, tap=False, screenshot=screenshot)
 
     if on_map or on_main:
         log(f"Recovery: Successfully returned (attempts: {recovery_attempts})")
@@ -644,7 +668,7 @@ def do_group(bot, device):
 
     log("Waiting for group menu to load")
     loop_count = 0
-    while not bot.find_and_click("gift") and bot.find_and_click("group", accuracy=0.99):
+    while not bot.find_and_click("gift",tap=False) and bot.find_and_click("group", accuracy=0.99):
         loop_count += 1
         if loop_count > 20:
             log("ERROR: Group menu failed to load")
@@ -652,7 +676,7 @@ def do_group(bot, device):
         time.sleep(0.3)
 
     counter = 0
-    while not bot.find_and_click("groupfullyloaded", tap=False):
+    while not bot.find_and_click("groupfullyloaded", tap=False,accuracy=0.8):
         counter += 1
         time.sleep(0.2)
         if counter > 10:
@@ -975,7 +999,7 @@ def do_parking(bot, device):
                 time.sleep(1)
 
             time.sleep(1)
-
+        return
         bot.swipe(270, 630, 270, -700)
         if bot.find_and_click('parking-main-gardencarpark'):
             time.sleep(2)

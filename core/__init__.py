@@ -16,7 +16,7 @@ from .bot import BOT, BotStoppedException
 from .android import Android, AndroidStoppedException, ADBTimeoutError
 from .state_manager import StateManager
 from .log_database import LogDatabase, get_available_devices, clear_all_devices_logs
-from .ldplayer import LDPlayer
+from .ldplayer import LDPlayer, launch_devices_if_needed
 
 # Export core utilities
 from .config_loader import (
@@ -65,6 +65,7 @@ __all__ = [
     'get_available_devices',
     'clear_all_devices_logs',
     'LDPlayer',
+    'launch_devices_if_needed',
 
     # Config
     'load_config',

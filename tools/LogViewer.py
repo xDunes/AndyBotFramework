@@ -135,6 +135,11 @@ class LogViewer:
         self.session_info_label.pack(side="left")
 
         # Navigation and clear buttons (right side before stats)
+        # Reload button (rightmost)
+        reload_button = ttk.Button(header_frame, text="⟳ Reload",
+                                   command=self.reload_all)
+        reload_button.pack(side="right", padx=(5, 0))
+
         # Clear All Devices button
         clear_all_button = ttk.Button(header_frame, text="Clear All Logs (All Devices)",
                                       command=self.clear_all_devices_logs)
@@ -784,6 +789,58 @@ class LogViewer:
         except Exception as e:
             messagebox.showerror("Error", f"Error clearing logs: {e}")
             self.status_var.set(f"Error clearing logs: {e}")
+
+    def reload_all(self):
+        """Reload devices, sessions, and logs from the database"""
+        self.status_var.set("Reloading...")
+        self.root.update()
+
+        # Remember current selections
+        previous_device = self.selected_device
+        previous_session = self.selected_session
+
+        # Close current database if open
+        if self.current_db:
+            try:
+                self.current_db.conn.close()
+            except Exception:
+                pass
+            self.current_db = None
+
+        # Clear content
+        self.clear_content()
+
+        # Reload devices
+        self.load_devices()
+
+        # Try to re-select previous device
+        if previous_device:
+            devices = get_available_devices()
+            if previous_device in devices:
+                idx = devices.index(previous_device)
+                self.device_listbox.selection_set(idx)
+                self.device_listbox.see(idx)
+
+                # Trigger device selection
+                self.on_device_selected(None)
+
+                # Try to re-select previous session
+                if previous_session and self.sessions_data:
+                    session_ids = [s['session_id'] for s in self.sessions_data]
+                    if previous_session in session_ids:
+                        session_idx = session_ids.index(previous_session)
+                        self.session_listbox.selection_set(session_idx)
+                        self.session_listbox.see(session_idx)
+                        self.on_session_selected(None)
+                        self.status_var.set(f"Reloaded - restored session {previous_session}")
+                    else:
+                        self.status_var.set(f"Reloaded - previous session no longer exists")
+                else:
+                    self.status_var.set(f"Reloaded device {previous_device}")
+            else:
+                self.status_var.set("Reloaded - previous device no longer exists")
+        else:
+            self.status_var.set("Reloaded")
 
     def add_inline_image(self, parent_frame, screenshot):
         """Add an image inline from numpy array

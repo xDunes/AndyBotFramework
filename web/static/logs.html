@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug Log Viewer</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        /* Override styles for standalone log viewer */
+        body {
+            padding: 1rem;
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+
+        .log-viewer-container {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 2rem);
+            gap: 1rem;
+        }
+
+        .log-viewer-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+            padding: 1rem;
+            background: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+        }
+
+        .log-viewer-header h1 {
+            font-size: 1.25rem;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        .log-viewer-header select {
+            min-width: 200px;
+        }
+
+        .log-viewer-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-left: auto;
+        }
+
+        .log-viewer-info {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            font-family: 'Courier New', monospace;
+        }
+
+        .log-viewer-content {
+            flex: 1;
+            background: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .log-viewer-entries {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+        }
+
+        /* Make debug log entries larger in standalone view */
+        .log-viewer-entries .debug-log-entry-message {
+            font-size: 0.875rem;
+        }
+
+        .log-viewer-entries .debug-log-entry-screenshot {
+            max-width: 400px;
+        }
+
+        /* Status bar at bottom */
+        .log-viewer-status {
+            padding: 0.5rem 1rem;
+            background: var(--bg-color);
+            border-top: 1px solid var(--border-color);
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-family: 'Courier New', monospace;
+        }
+
+        .controls-divider {
+            color: var(--border-color);
+            margin: 0 0.25rem;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+            border-color: #dc3545;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+            border-color: #bd2130;
+        }
+    </style>
+</head>
+<body>
+    <div class="log-viewer-container">
+        <!-- Header -->
+        <div class="log-viewer-header">
+            <h1>Debug Log Viewer</h1>
+            <select id="deviceSelect" onchange="onDeviceChange()">
+                <option value="">Select device...</option>
+            </select>
+            <select id="sessionSelect" onchange="onSessionChange()">
+                <option value="">Select session...</option>
+            </select>
+            <div class="log-viewer-controls">
+                <button class="btn btn-sm" onclick="scrollToTop()">Top</button>
+                <button class="btn btn-sm" onclick="scrollToBottom()">Bottom</button>
+                <button class="btn btn-sm" onclick="refreshLogs()">Refresh</button>
+                <span class="controls-divider">|</span>
+                <button class="btn btn-sm btn-danger" onclick="clearCurrentSession()">Clear Session</button>
+                <button class="btn btn-sm btn-danger" onclick="clearCurrentDevice()">Clear Device</button>
+                <button class="btn btn-sm btn-danger" onclick="clearAllLogs()">Clear All</button>
+            </div>
+        </div>
+
+        <!-- Log Content -->
+        <div class="log-viewer-content">
+            <div class="log-viewer-entries" id="logEntries">
+                <div class="debug-log-placeholder">Select a device and session to view debug logs</div>
+            </div>
+            <div class="log-viewer-status" id="statusBar">Ready</div>
+        </div>
+    </div>
+
+    <script>
+        // Theme handling
+        (function() {
+            const savedTheme = localStorage.getItem('theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+        })();
+
+        // State
+        let currentDevice = null;
+        let currentSession = null;
+        let sessions = [];
+
+        // Initialize
+        async function init() {
+            // Parse URL parameters
+            const params = new URLSearchParams(window.location.search);
+            const deviceParam = params.get('device');
+            const sessionParam = params.get('session');
+
+            // Load devices
+            await loadDevices();
+
+            // Auto-select device from URL
+            if (deviceParam) {
+                const deviceSelect = document.getElementById('deviceSelect');
+                deviceSelect.value = deviceParam;
+                await onDeviceChange();
+
+                // Auto-select session from URL
+                if (sessionParam) {
+                    const sessionSelect = document.getElementById('sessionSelect');
+                    sessionSelect.value = sessionParam;
+                    await onSessionChange();
+                }
+            }
+        }
+
+        // Load available devices
+        async function loadDevices() {
+            const select = document.getElementById('deviceSelect');
+            updateStatus('Loading devices...');
+
+            try {
+                const response = await fetch('/api/logs/devices');
+                const data = await response.json();
+
+                if (data.success) {
+                    select.innerHTML = '<option value="">Select device...</option>';
+                    data.devices.forEach(device => {
+                        const option = document.createElement('option');
+                        option.value = device;
+                        option.textContent = device;
+                        select.appendChild(option);
+                    });
+                    updateStatus(`${data.devices.length} device(s) available`);
+                } else {
+                    select.innerHTML = '<option value="">No devices found</option>';
+                    updateStatus('No devices found');
+                }
+            } catch (error) {
+                console.error('Error loading devices:', error);
+                select.innerHTML = '<option value="">Error loading devices</option>';
+                updateStatus('Error loading devices');
+            }
+        }
+
+        // Handle device selection change
+        async function onDeviceChange() {
+            const deviceSelect = document.getElementById('deviceSelect');
+            const sessionSelect = document.getElementById('sessionSelect');
+            currentDevice = deviceSelect.value;
+
+            if (!currentDevice) {
+                sessionSelect.innerHTML = '<option value="">Select session...</option>';
+                document.getElementById('logEntries').innerHTML =
+                    '<div class="debug-log-placeholder">Select a device and session to view debug logs</div>';
+                currentSession = null;
+                return;
+            }
+
+            updateStatus(`Loading sessions for ${currentDevice}...`);
+
+            try {
+                const response = await fetch(`/api/logs/${currentDevice}/sessions`);
+                const data = await response.json();
+
+                if (data.success) {
+                    sessions = data.sessions;
+                    sessionSelect.innerHTML = '<option value="">Select session...</option>';
+
+                    data.sessions.forEach(session => {
+                        const option = document.createElement('option');
+                        option.value = session.session_id;
+                        const startTime = new Date(session.start_time).toLocaleString();
+                        option.textContent = `${startTime} (${session.entry_count} entries)`;
+                        sessionSelect.appendChild(option);
+                    });
+
+                    // Auto-select most recent session
+                    if (data.sessions.length > 0) {
+                        sessionSelect.value = data.sessions[0].session_id;
+                        await onSessionChange();
+                    }
+
+                    updateStatus(`${data.sessions.length} session(s) for ${currentDevice}`);
+                } else {
+                    sessionSelect.innerHTML = '<option value="">No sessions found</option>';
+                    updateStatus('No sessions found');
+                }
+            } catch (error) {
+                console.error('Error loading sessions:', error);
+                sessionSelect.innerHTML = '<option value="">Error loading sessions</option>';
+                updateStatus('Error loading sessions');
+            }
+        }
+
+        // Handle session selection change
+        async function onSessionChange() {
+            const sessionSelect = document.getElementById('sessionSelect');
+            const container = document.getElementById('logEntries');
+            currentSession = sessionSelect.value;
+
+            if (!currentSession || !currentDevice) {
+                container.innerHTML = '<div class="debug-log-placeholder">Select a session to view debug logs</div>';
+                return;
+            }
+
+            // Show loading
+            container.innerHTML = `
+                <div class="debug-log-loading">
+                    <div class="debug-log-loading-spinner"></div>
+                    <span>Loading log entries...</span>
+                </div>
+            `;
+            updateStatus('Loading log entries...');
+
+            try {
+                const response = await fetch(`/api/logs/${currentDevice}/sessions/${currentSession}/entries?include_screenshots=true`);
+                const data = await response.json();
+
+                if (data.success) {
+                    if (data.entries.length === 0) {
+                        container.innerHTML = '<div class="debug-log-placeholder">No log entries in this session</div>';
+                        updateStatus('No entries in session');
+                        return;
+                    }
+
+                    // Render entries
+                    container.innerHTML = '';
+                    data.entries.forEach((entry, index) => {
+                        const entryEl = createLogEntry(entry, index + 1);
+                        container.appendChild(entryEl);
+                    });
+
+                    updateStatus(`Loaded ${data.entries.length} entries`);
+
+                    // Scroll to bottom
+                    scrollToBottom();
+                } else {
+                    container.innerHTML = `<div class="debug-log-placeholder">Error: ${data.error}</div>`;
+                    updateStatus(`Error: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error loading session:', error);
+                container.innerHTML = `<div class="debug-log-placeholder">Error loading session: ${error.message}</div>`;
+                updateStatus(`Error: ${error.message}`);
+            }
+        }
+
+        // Create a log entry element
+        function createLogEntry(entry, entryNumber) {
+            const div = document.createElement('div');
+            div.className = 'debug-log-entry';
+
+            // Header
+            const header = document.createElement('div');
+            header.className = 'debug-log-entry-header';
+
+            const numberEl = document.createElement('span');
+            numberEl.className = 'debug-log-entry-number';
+            numberEl.textContent = `#${entryNumber}`;
+            header.appendChild(numberEl);
+
+            const timeEl = document.createElement('span');
+            timeEl.className = 'debug-log-entry-time';
+            timeEl.textContent = `[${entry.timestamp_ms}]`;
+            header.appendChild(timeEl);
+
+            div.appendChild(header);
+
+            // Message
+            const messageEl = document.createElement('div');
+            messageEl.className = 'debug-log-entry-message';
+            messageEl.textContent = entry.message;
+            div.appendChild(messageEl);
+
+            // Screenshot
+            if (entry.screenshot) {
+                const img = document.createElement('img');
+                img.className = 'debug-log-entry-screenshot';
+                img.src = entry.screenshot;
+                img.alt = `Screenshot #${entryNumber}`;
+                img.loading = 'lazy';
+                img.onclick = () => window.open(entry.screenshot, '_blank');
+                div.appendChild(img);
+            }
+
+            return div;
+        }
+
+        // Utility functions
+        function scrollToTop() {
+            document.getElementById('logEntries').scrollTop = 0;
+        }
+
+        function scrollToBottom() {
+            const container = document.getElementById('logEntries');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function refreshLogs() {
+            if (currentSession) {
+                onSessionChange();
+            }
+        }
+
+        function updateStatus(message) {
+            document.getElementById('statusBar').textContent = message;
+        }
+
+        // Clear current session
+        async function clearCurrentSession() {
+            if (!currentDevice || !currentSession) {
+                alert('Please select a device and session first');
+                return;
+            }
+
+            if (!confirm(`Clear all logs in this session?\n\nDevice: ${currentDevice}\nSession: ${currentSession}`)) {
+                return;
+            }
+
+            updateStatus('Clearing session...');
+
+            try {
+                const response = await fetch(`/api/logs/${currentDevice}/sessions/${currentSession}/clear`, {
+                    method: 'POST'
+                });
+
+                // Check if response is OK before parsing JSON
+                if (!response.ok) {
+                    const text = await response.text();
+                    console.error('Server error:', response.status, text.substring(0, 200));
+                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    updateStatus(data.message);
+                    // Refresh session list
+                    await onDeviceChange();
+                } else {
+                    updateStatus(`Error: ${data.error}`);
+                    alert(`Error clearing session: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error clearing session:', error);
+                updateStatus(`Error: ${error.message}`);
+                alert(`Error clearing session: ${error.message}`);
+            }
+        }
+
+        // Clear all logs for current device
+        async function clearCurrentDevice() {
+            if (!currentDevice) {
+                alert('Please select a device first');
+                return;
+            }
+
+            if (!confirm(`Clear ALL logs for device "${currentDevice}"?\n\nThis will delete all sessions and log entries for this device.`)) {
+                return;
+            }
+
+            updateStatus('Clearing device logs...');
+
+            try {
+                const response = await fetch(`/api/logs/${currentDevice}/clear`, {
+                    method: 'POST'
+                });
+
+                // Check if response is OK before parsing JSON
+                if (!response.ok) {
+                    const text = await response.text();
+                    console.error('Server error:', response.status, text.substring(0, 200));
+                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    updateStatus(data.message);
+                    // Refresh session list
+                    await onDeviceChange();
+                } else {
+                    updateStatus(`Error: ${data.error}`);
+                    alert(`Error clearing device: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error clearing device:', error);
+                updateStatus(`Error: ${error.message}`);
+                alert(`Error clearing device: ${error.message}`);
+            }
+        }
+
+        // Clear all logs from all devices
+        async function clearAllLogs() {
+            if (!confirm('Clear ALL logs from ALL devices?\n\nThis action cannot be undone!')) {
+                return;
+            }
+
+            // Double confirmation for safety
+            if (!confirm('Are you ABSOLUTELY sure?\n\nThis will permanently delete all debug logs from all devices.')) {
+                return;
+            }
+
+            updateStatus('Clearing all logs...');
+
+            try {
+                const response = await fetch('/api/logs/clear-all', {
+                    method: 'POST'
+                });
+
+                // Check if response is OK before parsing JSON
+                if (!response.ok) {
+                    const text = await response.text();
+                    console.error('Server error:', response.status, text.substring(0, 200));
+                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    updateStatus(data.message);
+                    // Refresh everything
+                    await loadDevices();
+                    document.getElementById('sessionSelect').innerHTML = '<option value="">Select session...</option>';
+                    document.getElementById('logEntries').innerHTML =
+                        '<div class="debug-log-placeholder">All logs cleared. Select a device and session to view debug logs.</div>';
+                    currentSession = null;
+                } else {
+                    updateStatus(`Error: ${data.error}`);
+                    alert(`Error clearing all logs: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error clearing all logs:', error);
+                updateStatus(`Error: ${error.message}`);
+                alert(`Error clearing all logs: ${error.message}`);
+            }
+        }
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

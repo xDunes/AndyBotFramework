@@ -14,6 +14,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-02-01
+
+### Architecture Cleanup - Direct In-Memory State
+
+**BREAKING CHANGES**: Removed standalone web server. Web interface now integrated into master_of_bots only.
+
+#### Removed
+- **Standalone web server** - Deleted `web/server.py` and related files (8 files total)
+  - `web/server.py`, `web/test_connection.py`
+  - `web/start_web_remote.bat`, `web/start_web_remote.vbs`
+  - `web/install_dependencies.bat`
+  - `web/QUICK_START.md`, `web/README.md`, `web/requirements.txt`
+- **Database-based remote monitoring** - Removed StateManager database usage from start_bot.py
+- **Remote command relay** - Eliminated database queue for command processing
+
+#### Changed
+- **start_bot.py** - Now runs in pure local mode by default
+  - `enable_remote=False` parameter (no StateManager database)
+  - No remote monitoring thread
+  - No state_monitor.db created
+  - Fully functional GUI without any database dependencies
+- **master_of_bots.py** - Refactored for direct in-memory state access
+  - Flask endpoints read directly from HeadlessBot objects (no database queries)
+  - Added `get_state_dict()` method for thread-safe state access
+  - Added `get_screenshot_data()` method for direct screenshot access
+  - Added in-memory timing: `start_time`, `end_time`, `current_action`
+  - StateManager now optional (disabled by default)
+  - Commands execute via direct method calls (< 100ms)
+- **StateManager** - Now optional throughout the codebase
+  - BotGUI accepts `enable_remote` parameter to enable StateManager
+  - All StateManager calls guarded with null checks
+  - Not used by default in any mode
+- **Web Interface** - Integrated into master_of_bots only
+  - Start with: `python master_of_bots.py apex_girl`
+  - Direct in-memory state access (no database relay)
+  - Instant command execution and state updates
+  - WebSocket streaming with direct bot access
+
+#### Added
+- **HeadlessBot improvements**
+  - `mark_running()` / `mark_stopped()` - Track start/end times in memory
+  - `update_action(action)` - Track current action in memory
+  - Thread-safe state access with RLock
+- **Performance improvements**
+  - State queries: < 1ms (vs 10-50ms with database)
+  - Commands: < 100ms (instant direct calls vs database relay)
+  - Screenshots: Real-time streaming (no database encoding/decoding)
+  - Zero database lag - eliminated polling delays
+
+#### Documentation
+- Updated README.md - New architecture and web interface sections
+- Rewrote STATE_MONITORING_README.md - Direct in-memory state documentation
+- Updated all references to standalone web server
+- Added migration guide from old to new architecture
+
+#### Migration Guide
+- **Before**: `python start_bot.py` + `python web/server.py` (two processes)
+- **After Option 1**: `python start_bot.py` (local GUI only, no remote)
+- **After Option 2**: `python master_of_bots.py` (headless with integrated web UI)
+
+---
+
+## [0.4.1] - 2025-12-16
+
+### Auto-Launch & ADB Improvements
+
+#### Added
+- **Auto-launch LDPlayer devices** - Devices are now automatically launched when starting bots
+  - `start_bot.py` automatically launches the specified device before connecting
+  - `master_of_bots.py` launches all specified devices with staggered 5-second delays
+  - 45-second boot wait after launching to ensure devices are ready
+  - Use `--no-auto-start-device` flag to disable auto-launch behavior
+- **Condensed ADB connection logging** - Retry messages now display on single line
+  - Shows available serials inline: `Serial 'xxx' not found (1/5). Available: [serials]`
+  - Final failure message: `FAILED: Stopping for 'xxx'. Available: [serials]`
+- **Improved device detection** - Now filters out offline/unauthorized ADB devices
+  - Only shows devices in "device" state as available
+
+#### Changed
+- **Renamed `--no-auto-start` to `--no-auto-start-bot`** - Clearer naming for bot auto-start control
+- **Bot status messages improved** - "Started" changed to "Starting..." since connection happens in thread
+
+#### Documentation
+- Updated README.md with new Usage section documenting `start_bot.py` and `master_of_bots.py` options
+- Added "Auto-Launch Behavior" section to README.md
+
+---
+
 ## [0.4.0] - 2025-12-16
 
 ### Master of Bots Web Interface Improvements
@@ -429,7 +517,8 @@ Apex-Girl/
 
 ## Version History
 
-- **0.4.0** - 2025-12-16 - Fixed ALL mode device selection bug, removed config.json dependency, added apex_girl.example.conf
+- **0.4.1** - 2025-12-16 - Auto-launch LDPlayer devices, condensed ADB logging, improved device detection
+- **0.4.0** - 2025-12-16 - Fixed ALL mode device selection bug, removed config.json dependency
 - **0.3.0** - 2025-12-08 - Major refactoring: unified start_bot.py, commands.py modules, "Shortcuts"→"Commands" rename
 - **0.2.0** - 2025-11-16 - Web interface, state monitoring system, comprehensive documentation improvements
 - **0.1.3** - 2025-11-11 - Control key override, do_recover improvements, rally enhancements, botTemplate sync

@@ -11,9 +11,6 @@ let appConfig = null;
 
 // State
 let selectedDevice = null;
-let autoRefresh = true;
-let refreshInterval = 1000; // milliseconds (1s default - more stable for remote connections)
-let refreshTimer = null;
 let screenshotDisplaySize = null;
 let mouseDownPos = null;
 let allBots = []; // Store all bots for mobile navigation
@@ -24,7 +21,6 @@ let touchEndY = 0;
 
 // WebSocket state
 let socket = null;
-let screenshotFPS = 5; // Default 5 FPS for live feed
 
 // Preview screenshots state
 let previewScreenshots = {}; // Map of device_name -> screenshot data
@@ -86,8 +82,8 @@ async function init() {
     // Initialize WebSocket connection
     initializeWebSocket();
 
-    // Start auto-refresh
-    startAutoRefresh();
+    // Load initial data (WebSocket will handle live updates)
+    refreshData();
 }
 
 // Initialize WebSocket connection for live updates
@@ -133,11 +129,6 @@ function initializeWebSocket() {
                 updatePreviewScreenshot(data.device_name, data.preview);
             }
         }
-    });
-
-    socket.on('fps_updated', (data) => {
-        console.log(`Screenshot FPS updated to: ${data.fps}`);
-        screenshotFPS = data.fps;
     });
 
     // Listen for real-time log updates
@@ -608,29 +599,6 @@ function setupEventListeners() {
         }
     });
 
-    // Auto-refresh toggle
-    document.getElementById('autoRefresh').addEventListener('change', (e) => {
-        autoRefresh = e.target.checked;
-        if (autoRefresh) {
-            startAutoRefresh();
-        } else {
-            stopAutoRefresh();
-        }
-    });
-
-    // Set interval button
-    document.getElementById('setInterval').addEventListener('click', () => {
-        const value = parseFloat(document.getElementById('refreshInterval').value);
-        if (value > 0) {
-            refreshInterval = value * 1000; // Convert to milliseconds
-            console.log(`Refresh interval set to ${value}s (${refreshInterval}ms)`);
-            if (autoRefresh) {
-                stopAutoRefresh();
-                startAutoRefresh();
-            }
-        }
-    });
-
     // Handle window resize to update preview layout
     window.addEventListener('resize', () => {
         if (isAllModeActive() && selectedDevice) {
@@ -764,19 +732,6 @@ function createFunctionCheckboxes() {
         row.appendChild(label);
 
         container.appendChild(row);
-    }
-}
-
-// Auto-refresh control
-function startAutoRefresh() {
-    refreshData();
-    refreshTimer = setInterval(refreshData, refreshInterval);
-}
-
-function stopAutoRefresh() {
-    if (refreshTimer) {
-        clearInterval(refreshTimer);
-        refreshTimer = null;
     }
 }
 
@@ -1006,11 +961,11 @@ function selectDevice(deviceName) {
 
     // If ALL mode is active, update preview states (keep positions, just update active indicator)
     if (isAllModeActive()) {
-        // Remove selected device from selectedPreviews, add it back to others
+        // Remove selected device from selectedPreviews, add ALL other devices
         selectedPreviews.delete(deviceName);
-        // Add all other devices that aren't already selected
+        // Add all other devices (including the previously active device)
         allBots.forEach(bot => {
-            if (bot.device_name !== deviceName && !selectedPreviews.has(bot.device_name)) {
+            if (bot.device_name !== deviceName) {
                 selectedPreviews.add(bot.device_name);
             }
         });
@@ -1028,7 +983,6 @@ function selectDevice(deviceName) {
 // Update current device display in header
 function updateCurrentDeviceDisplay() {
     const currentDeviceNameEl = document.getElementById('currentDeviceName');
-    const statusIndicator = document.getElementById('statusIndicator');
 
     // Find the bot in allBots to get its status
     const bot = allBots.find(b => b.device_name === selectedDevice);
@@ -1037,18 +991,6 @@ function updateCurrentDeviceDisplay() {
         const ldIndicator = bot.ld_running ? '🟢' : '🔴';
         const botIndicator = bot.is_running ? '🟢' : '🔴';
         currentDeviceNameEl.innerHTML = `${selectedDevice} <span style="font-size: 0.8em;">LD${ldIndicator} Bot${botIndicator}</span>`;
-
-        // Main status indicator shows bot running state (for backward compatibility)
-        statusIndicator.className = 'status-indicator';
-        if (bot.is_running) {
-            if (bot.elapsed_seconds && bot.elapsed_seconds > 30) {
-                statusIndicator.classList.add('stale');
-            } else {
-                statusIndicator.classList.add('running');
-            }
-        } else {
-            statusIndicator.classList.add('stopped');
-        }
     } else {
         currentDeviceNameEl.textContent = selectedDevice || 'Loading...';
     }
@@ -1125,25 +1067,50 @@ function updateStatusInfo(state) {
 
 // Update control panel
 function updateControlPanel(state) {
+    // Determine if we should show aggregate state (ALL mode with multiple devices)
+    const inAllMode = isAllModeActive();
+    const targetDevices = getTargetDevices();
+    const showAggregate = inAllMode && targetDevices.length > 1;
+
     // Update function checkboxes based on function_layout
     if (appConfig && appConfig.function_layout) {
         appConfig.function_layout.forEach(rowFunctions => {
             rowFunctions.forEach(funcName => {
                 const input = document.getElementById(funcName);
-                if (input && funcName in state) {
-                    input.checked = Boolean(state[funcName]);
+                if (!input) return;
+
+                if (showAggregate) {
+                    // In ALL mode: checkbox is checked if ANY target device has it enabled
+                    const isEnabledOnAny = targetDevices.some(deviceName => {
+                        const bot = allBots.find(b => b.device_name === deviceName);
+                        return bot && (bot[funcName] === 1 || bot[funcName] === true);
+                    });
+                    input.checked = isEnabledOnAny;
+                } else {
+                    // Single device mode: show state of selected device
+                    if (funcName in state) {
+                        input.checked = Boolean(state[funcName]);
+                    }
                 }
             });
         });
     }
 
-    // Update fix_enabled if it exists
+    // Update fix_enabled - also use aggregate in ALL mode
     const fixEnabledInput = document.getElementById('fix_enabled');
-    if (fixEnabledInput && 'fix_enabled' in state) {
-        fixEnabledInput.checked = Boolean(state.fix_enabled);
+    if (fixEnabledInput) {
+        if (showAggregate) {
+            const isEnabledOnAny = targetDevices.some(deviceName => {
+                const bot = allBots.find(b => b.device_name === deviceName);
+                return bot && (bot.fix_enabled === 1 || bot.fix_enabled === true);
+            });
+            fixEnabledInput.checked = isEnabledOnAny;
+        } else if ('fix_enabled' in state) {
+            fixEnabledInput.checked = Boolean(state.fix_enabled);
+        }
     }
 
-    // Update dynamic bot settings
+    // Update dynamic bot settings (always show selected device's values, not aggregate)
     if (appConfig && appConfig.bot_settings) {
         appConfig.bot_settings.forEach(setting => {
             const element = document.getElementById(setting.id);
@@ -1153,21 +1120,20 @@ function updateControlPanel(state) {
         });
     }
 
-    // Update debug checkboxes (both in Settings and Bot section)
-    const debugElement = document.getElementById('debugEnabled');
-    if (debugElement) {
-        debugElement.checked = Boolean(state.debug_enabled);
-    }
+    // Update debug checkbox - ALWAYS show current device's state only
+    // Debug is per-device, never aggregated in ALL mode
     const botDebugElement = document.getElementById('botDebugEnabled');
     if (botDebugElement) {
         botDebugElement.checked = Boolean(state.debug_enabled);
     }
-
 }
 
 // Update function checkbox tooltips to show which devices have each function enabled
 function updateFunctionTooltips() {
     if (!appConfig || !appConfig.function_layout) return;
+
+    const inAllMode = isAllModeActive();
+    const targetDevices = getTargetDevices();
 
     appConfig.function_layout.forEach(rowFunctions => {
         rowFunctions.forEach(funcName => {
@@ -1180,10 +1146,29 @@ function updateFunctionTooltips() {
                 .filter(bot => bot[funcName] === 1 || bot[funcName] === true)
                 .map(bot => bot.device_name);
 
-            if (enabledDevices.length > 0) {
-                label.title = `Enabled on: ${enabledDevices.join(', ')}`;
+            if (inAllMode && targetDevices.length > 1) {
+                // In ALL mode, show which of the selected devices have it enabled
+                const enabledInSelection = targetDevices.filter(deviceName =>
+                    enabledDevices.includes(deviceName)
+                );
+                const disabledInSelection = targetDevices.filter(deviceName =>
+                    !enabledDevices.includes(deviceName)
+                );
+
+                if (enabledInSelection.length === targetDevices.length) {
+                    label.title = `Enabled on ALL selected devices (${enabledInSelection.length})`;
+                } else if (enabledInSelection.length > 0) {
+                    label.title = `Enabled: ${enabledInSelection.join(', ')}\nDisabled: ${disabledInSelection.join(', ')}`;
+                } else {
+                    label.title = 'Disabled on all selected devices';
+                }
             } else {
-                label.title = 'Not enabled on any device';
+                // Single device mode - show all devices status
+                if (enabledDevices.length > 0) {
+                    label.title = `Enabled on: ${enabledDevices.join(', ')}`;
+                } else {
+                    label.title = 'Not enabled on any device';
+                }
             }
         });
     });
@@ -1480,44 +1465,36 @@ async function sendCheckboxCommand(checkboxName) {
     }
 }
 
-// Send debug setting command (handles both Debug checkboxes and syncs them)
+// Send debug setting command
+// NOTE: Debug is ALWAYS per-device only, never applies to ALL mode
+// Each device maintains its own independent debug state
 async function sendDebugSetting(checkbox) {
     if (!selectedDevice) return;
 
     const value = checkbox.checked;
 
-    // Sync both debug checkboxes
-    const debugEnabled = document.getElementById('debugEnabled');
-    const botDebugEnabled = document.getElementById('botDebugEnabled');
-    if (debugEnabled) debugEnabled.checked = value;
-    if (botDebugEnabled) botDebugEnabled.checked = value;
-
-    const targetDevices = getTargetDevices();
-    if (targetDevices.length === 0) return;
-
-    let successCount = 0;
-
-    // Execute sequentially to ensure all commands are processed reliably
-    for (const deviceName of targetDevices) {
-        try {
-            const response = await fetch('/api/command/setting', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    device_name: deviceName,
-                    apply_mode: 'current',
-                    name: 'debug_enabled',
-                    value: value
-                })
-            });
-            const result = await response.json();
-            if (result.success) successCount++;
-        } catch (err) {
-            console.error(`Debug setting failed for ${deviceName}:`, err.message);
+    // Debug only applies to current device - never ALL mode
+    // Each device has independent debug state
+    try {
+        const response = await fetch('/api/command/setting', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device_name: selectedDevice,
+                apply_mode: 'current',
+                name: 'debug_enabled',
+                value: value
+            })
+        });
+        const result = await response.json();
+        if (result.success) {
+            console.log(`Debug setting sent to ${selectedDevice}: debug_enabled = ${value}`);
+        } else {
+            console.error(`Debug setting failed for ${selectedDevice}:`, result.error);
         }
+    } catch (err) {
+        console.error(`Debug setting failed for ${selectedDevice}:`, err.message);
     }
-
-    console.log(`Debug setting sent to ${successCount}/${targetDevices.length} devices: debug_enabled = ${value}`);
 }
 
 // Send setting command
@@ -1793,22 +1770,6 @@ async function sendCommand(commandName) {
     }, 1000);
 }
 
-// Set screenshot FPS
-function setScreenshotFPS() {
-    const fpsSelect = document.getElementById('screenshotFPS');
-    const fps = parseInt(fpsSelect.value);
-
-    screenshotFPS = fps;
-
-    // Send to server via WebSocket
-    if (socket && socket.connected) {
-        socket.emit('set_fps', { fps: fps });
-        console.log(`Screenshot FPS set to: ${fps}`);
-    } else {
-        console.warn('WebSocket not connected, FPS change not sent to server');
-    }
-}
-
 // Set theme (dark/light)
 function setTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
@@ -2009,6 +1970,397 @@ function navigateToNextDevice() {
         console.log('Wrapped to first device:', allBots[0].device_name);
     }
 }
+
+// =============================================================================
+// LOG TABS AND DEBUG LOG VIEWER
+// =============================================================================
+
+// Debug log state
+let currentDebugSession = null;
+let debugLogSessions = [];
+
+// Switch between Recent Log and Debug Logs tabs
+function switchLogTab(tabName) {
+    // Update tab buttons
+    document.querySelectorAll('.log-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.tab === tabName);
+    });
+
+    // Update tab content
+    document.getElementById('recentLogTab').classList.toggle('active', tabName === 'recent');
+    document.getElementById('debugLogTab').classList.toggle('active', tabName === 'debug');
+
+    // Show/hide popout button
+    const popoutBtn = document.getElementById('logPopoutBtn');
+    if (popoutBtn) {
+        popoutBtn.style.display = tabName === 'debug' ? 'flex' : 'none';
+    }
+
+    // Load debug sessions when switching to debug tab
+    if (tabName === 'debug' && selectedDevice) {
+        loadDebugSessions();
+    }
+}
+
+// Load debug sessions for the current device
+async function loadDebugSessions() {
+    if (!selectedDevice) return;
+
+    const select = document.getElementById('debugSessionSelect');
+    const infoEl = document.getElementById('debugSessionInfo');
+    const container = document.getElementById('debugLogContainer');
+
+    try {
+        const response = await fetch(`/api/logs/${selectedDevice}/sessions`);
+
+        // Check if response is OK
+        if (!response.ok) {
+            const text = await response.text();
+            console.error('Server error response:', response.status, text.substring(0, 200));
+            throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+
+        if (data.success) {
+            debugLogSessions = data.sessions;
+
+            // Populate session dropdown
+            select.innerHTML = '<option value="">Select a session...</option>';
+
+            if (data.sessions.length === 0) {
+                // No sessions found for this device
+                infoEl.textContent = data.message || 'No debug sessions available';
+                container.innerHTML = '<div class="debug-log-placeholder">No debug log sessions found for this device. Enable Debug mode to start logging.</div>';
+                return;
+            }
+
+            data.sessions.forEach((session, index) => {
+                const option = document.createElement('option');
+                option.value = session.session_id;
+
+                // Format: "YYYY-MM-DD HH:MM:SS (X entries)"
+                const startTime = new Date(session.start_time).toLocaleString();
+                option.textContent = `${startTime} (${session.entry_count} entries)`;
+
+                select.appendChild(option);
+            });
+
+            // Auto-select most recent session (first in list)
+            if (data.sessions.length > 0) {
+                select.value = data.sessions[0].session_id;
+                loadDebugSession();
+            }
+
+            infoEl.textContent = `${data.sessions.length} session(s) available`;
+        } else {
+            select.innerHTML = '<option value="">Error loading sessions</option>';
+            infoEl.textContent = data.error || 'Error loading sessions';
+            container.innerHTML = `<div class="debug-log-placeholder">Error: ${data.error || 'Failed to load sessions'}</div>`;
+        }
+    } catch (error) {
+        console.error('Error loading debug sessions:', error);
+        select.innerHTML = '<option value="">Error loading sessions</option>';
+        infoEl.textContent = 'Connection error';
+        container.innerHTML = `<div class="debug-log-placeholder">Connection error: ${error.message}</div>`;
+    }
+}
+
+// Load log entries for a debug session
+async function loadDebugSession() {
+    const select = document.getElementById('debugSessionSelect');
+    const container = document.getElementById('debugLogContainer');
+    const sessionId = select.value;
+
+    if (!sessionId || !selectedDevice) {
+        container.innerHTML = '<div class="debug-log-placeholder">Select a session to view debug logs with screenshots</div>';
+        currentDebugSession = null;
+        return;
+    }
+
+    currentDebugSession = parseInt(sessionId);
+
+    // Show loading indicator
+    container.innerHTML = `
+        <div class="debug-log-loading">
+            <div class="debug-log-loading-spinner"></div>
+            <span>Loading log entries...</span>
+        </div>
+    `;
+
+    try {
+        // Fetch entries with screenshots
+        const response = await fetch(`/api/logs/${selectedDevice}/sessions/${sessionId}/entries?include_screenshots=true`);
+        const data = await response.json();
+
+        if (data.success) {
+            if (data.entries.length === 0) {
+                container.innerHTML = '<div class="debug-log-placeholder">No log entries in this session</div>';
+                return;
+            }
+
+            // Render log entries
+            container.innerHTML = '';
+            data.entries.forEach((entry, index) => {
+                const entryEl = createDebugLogEntry(entry, index + 1);
+                container.appendChild(entryEl);
+            });
+
+            // Scroll to bottom
+            container.scrollTop = container.scrollHeight;
+        } else {
+            container.innerHTML = `<div class="debug-log-placeholder">Error: ${data.error}</div>`;
+        }
+    } catch (error) {
+        console.error('Error loading debug session:', error);
+        container.innerHTML = `<div class="debug-log-placeholder">Error loading session: ${error.message}</div>`;
+    }
+}
+
+// Create a debug log entry element
+function createDebugLogEntry(entry, entryNumber) {
+    const div = document.createElement('div');
+    div.className = 'debug-log-entry';
+    div.dataset.entryId = entry.entry_id;
+
+    // Header with number and timestamp
+    const header = document.createElement('div');
+    header.className = 'debug-log-entry-header';
+
+    const numberEl = document.createElement('span');
+    numberEl.className = 'debug-log-entry-number';
+    numberEl.textContent = `#${entryNumber}`;
+    header.appendChild(numberEl);
+
+    const timeEl = document.createElement('span');
+    timeEl.className = 'debug-log-entry-time';
+    timeEl.textContent = `[${entry.timestamp_ms}]`;
+    header.appendChild(timeEl);
+
+    div.appendChild(header);
+
+    // Message
+    const messageEl = document.createElement('div');
+    messageEl.className = 'debug-log-entry-message';
+    messageEl.textContent = entry.message;
+    div.appendChild(messageEl);
+
+    // Screenshot (if present)
+    if (entry.screenshot) {
+        const img = document.createElement('img');
+        img.className = 'debug-log-entry-screenshot';
+        img.src = entry.screenshot;
+        img.alt = `Screenshot for entry #${entryNumber}`;
+        img.loading = 'lazy'; // Lazy load images
+
+        // Click to open full size in new tab
+        img.onclick = () => {
+            window.open(entry.screenshot, '_blank');
+        };
+
+        div.appendChild(img);
+    }
+
+    return div;
+}
+
+// Pop out debug logs to new window/tab
+function popoutDebugLogs() {
+    if (!selectedDevice) {
+        alert('No device selected');
+        return;
+    }
+
+    // Build URL with device and session parameters
+    let url = `/logs.html?device=${encodeURIComponent(selectedDevice)}`;
+    if (currentDebugSession) {
+        url += `&session=${currentDebugSession}`;
+    }
+
+    // Open in new window
+    window.open(url, '_blank', 'width=1000,height=800,menubar=no,toolbar=no');
+}
+
+// Refresh debug logs when device changes
+function onDeviceChangedForLogs() {
+    // If debug tab is active, reload sessions
+    const debugTab = document.querySelector('.log-tab[data-tab="debug"]');
+    if (debugTab && debugTab.classList.contains('active')) {
+        loadDebugSessions();
+    }
+}
+
+// Reload recent log for newly selected device
+async function reloadRecentLog() {
+    if (!selectedDevice) {
+        updateLog('');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/bots/${selectedDevice}`);
+        const data = await response.json();
+        if (data.success && data.state) {
+            updateLog(data.state.current_log || '');
+        }
+    } catch (error) {
+        console.error('Error reloading recent log:', error);
+    }
+}
+
+// Hook into device selection to refresh debug logs, device details, and recent log
+const originalSelectDevice = selectDevice;
+selectDevice = function(deviceName) {
+    originalSelectDevice(deviceName);
+    onDeviceChangedForLogs();
+    startDetailsUpdates();
+    reloadRecentLog();
+};
+
+// =============================================================================
+// DEVICE DETAILS IN HEADER
+// =============================================================================
+
+let detailsUpdateInterval = null;
+let currentQueueData = null;
+
+// Update device details in header
+async function updateDeviceDetails() {
+    if (!selectedDevice) {
+        // Hide details when no device selected
+        const detailsHeader = document.getElementById('deviceDetailsHeader');
+        if (detailsHeader) {
+            detailsHeader.style.display = 'none';
+        }
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/bots/${selectedDevice}/details`);
+        const data = await response.json();
+
+        if (data.success) {
+            const details = data.details;
+            currentQueueData = details.command_queue;
+
+            const detailsHeader = document.getElementById('deviceDetailsHeader');
+            const activityText = document.getElementById('headerCurrentActivity');
+            const queueSummary = document.getElementById('headerQueueSummary');
+            const queuePreview = document.getElementById('headerQueuePreview');
+
+            // Mobile elements
+            const mobileActivity = document.getElementById('mobileCurrentActivity');
+            const mobileQueue = document.getElementById('mobileQueueSummary');
+            const mobileDetails = document.getElementById('deviceDetailsMobile');
+
+            // Show details header (desktop)
+            if (detailsHeader) {
+                detailsHeader.style.display = 'flex';
+            }
+
+            // Show mobile details
+            if (mobileDetails) {
+                mobileDetails.style.display = 'block';
+            }
+
+            // Update activity (desktop and mobile)
+            const currentAction = details.current_action || 'Idle';
+            if (activityText) {
+                activityText.textContent = currentAction;
+            }
+            if (mobileActivity) {
+                mobileActivity.textContent = currentAction;
+            }
+
+            // Update queue summary and preview
+            const commands = details.command_queue.commands || [];
+            const queueCount = commands.length.toString();
+
+            if (queueSummary) {
+                queueSummary.textContent = queueCount;
+            }
+            if (mobileQueue) {
+                mobileQueue.textContent = queueCount;
+            }
+
+            if (queuePreview) {
+                // Show top 3 oldest commands in preview
+                if (commands.length > 0) {
+                    const preview = commands.slice(0, 3).map((cmd, i) => {
+                        const delay = Math.floor(cmd.delay_seconds);
+                        return `${i + 1}. ${cmd.description} (${delay}s)`;
+                    }).join('<br>');
+
+                    queuePreview.innerHTML = preview.split('<br>').map(line =>
+                        `<div class="queue-preview-item">${line}</div>`
+                    ).join('');
+                } else {
+                    queuePreview.innerHTML = '<div class="queue-preview-item">No commands queued</div>';
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error updating device details:', error);
+    }
+}
+
+// Show queue modal with full list
+function showQueueModal() {
+    const modal = document.getElementById('queueModal');
+    const content = document.getElementById('queueModalContent');
+
+    if (!currentQueueData || !currentQueueData.commands) {
+        content.innerHTML = '<div class="queue-empty">No commands in queue</div>';
+    } else {
+        const commands = currentQueueData.commands;
+        if (commands.length === 0) {
+            content.innerHTML = '<div class="queue-empty">No commands in queue</div>';
+        } else {
+            content.innerHTML = commands.map((cmd, index) => {
+                const delay = Math.floor(cmd.delay_seconds);
+                return `
+                    <div class="queue-command">
+                        <div class="queue-command-desc">${index + 1}. ${cmd.description}</div>
+                        <div class="queue-command-time">Queued: ${cmd.queued_at} (${delay}s ago)</div>
+                    </div>
+                `;
+            }).join('');
+        }
+    }
+
+    modal.style.display = 'flex';
+}
+
+// Close queue modal
+function closeQueueModal() {
+    const modal = document.getElementById('queueModal');
+    modal.style.display = 'none';
+}
+
+// Start auto-updating device details
+function startDetailsUpdates() {
+    if (detailsUpdateInterval) {
+        clearInterval(detailsUpdateInterval);
+    }
+    updateDeviceDetails();
+    detailsUpdateInterval = setInterval(updateDeviceDetails, 1000);
+}
+
+// Stop auto-updating device details
+function stopDetailsUpdates() {
+    if (detailsUpdateInterval) {
+        clearInterval(detailsUpdateInterval);
+        detailsUpdateInterval = null;
+    }
+}
+
+// Close modal when clicking outside
+window.addEventListener('click', function(event) {
+    const queueModal = document.getElementById('queueModal');
+    if (event.target === queueModal) {
+        closeQueueModal();
+    }
+});
 
 // Initialize on page load
 if (document.readyState === 'loading') {

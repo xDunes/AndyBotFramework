@@ -80,6 +80,10 @@ class BOT:
         self._command_queue: queue.Queue = queue.Queue()
         self._command_thread: Optional[threading.Thread] = None
         self._command_thread_running = False
+        # When True, commands are processed by main loop instead of background thread
+        self._main_loop_processes_commands = False
+        # Track command timestamps for queue display
+        self._command_timestamps = []  # List of (description, timestamp) tuples
 
         if findimg_path:
             self._load_all_needles()
@@ -160,6 +164,34 @@ class BOT:
             self._command_thread.join(timeout=2.0)
             self._command_thread = None
 
+    def get_command_queue_info(self):
+        """Get current command queue status
+
+        Returns:
+            dict: Queue information with commands and timestamps
+                {
+                    'queue_size': int,
+                    'commands': [
+                        {'description': str, 'queued_at': str, 'delay_seconds': float},
+                        ...
+                    ]
+                }
+        """
+        now = datetime.now()
+        commands = []
+        for desc, timestamp in self._command_timestamps:
+            delay = (now - timestamp).total_seconds()
+            commands.append({
+                'description': desc,
+                'queued_at': timestamp.strftime("%H:%M:%S"),
+                'delay_seconds': delay
+            })
+
+        return {
+            'queue_size': self._command_queue.qsize(),
+            'commands': commands
+        }
+
     def queue_command(self, command_func: Callable[[], Any], description: str = ""):
         """Queue a command for serialized execution
 
@@ -171,9 +203,16 @@ class BOT:
             bot.queue_command(lambda: bot.tap(100, 200), "Tap at 100,200")
             bot.queue_command(lambda: bot.swipe(0, 500, 0, 100, 300), "Swipe up")
         """
-        # Auto-start the queue thread if not running
-        if not self._command_thread_running:
+        # Auto-start the queue thread if not running and not being processed by main loop
+        if not self._command_thread_running and not self._main_loop_processes_commands:
             self.start_command_queue()
+
+        # Track timestamp when command was queued
+        timestamp = datetime.now()
+        self._command_timestamps.append((description or "Unknown command", timestamp))
+        # Keep only last 50 commands in history
+        if len(self._command_timestamps) > 50:
+            self._command_timestamps.pop(0)
 
         self._command_queue.put((command_func, description))
 
@@ -196,6 +235,10 @@ class BOT:
                 except Exception as e:
                     if self.gui:
                         self.log(f"Command error: {e}")
+
+                # Remove the completed command from timestamps list (FIFO - oldest first)
+                if self._command_timestamps:
+                    self._command_timestamps.pop(0)
 
                 self._command_queue.task_done()
 

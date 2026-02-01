@@ -38,7 +38,7 @@ def set_state_manager(state_manager):
     """Set the state manager for web interface logging
 
     Args:
-        state_manager: StateManager instance
+        state_manager: StateManager instance or None (for local-only mode)
     """
     global _state_manager
     _state_manager = state_manager

@@ -102,6 +102,7 @@ class StateManager:
         """
         self.device_name = device_name
         self.db_path = self._get_db_path()
+        self.current_action = ""  # Track current action/function for display
 
         # Initialize database schema (thread-safe)
         self._init_schema()
@@ -179,7 +180,13 @@ class StateManager:
                     screenshot_timestamp TIMESTAMP,
 
                     -- Current log (last 10 entries)
-                    current_log TEXT DEFAULT ''
+                    current_log TEXT DEFAULT '',
+
+                    -- Current action/function
+                    current_action TEXT DEFAULT '',
+
+                    -- Command queue data (JSON)
+                    command_queue TEXT DEFAULT '{}'
                 )
             ''')
 
@@ -221,6 +228,10 @@ class StateManager:
                 cursor.execute('ALTER TABLE bot_states ADD COLUMN doParking INTEGER DEFAULT 0')
             if 'doGig' not in columns:
                 cursor.execute('ALTER TABLE bot_states ADD COLUMN doGig INTEGER DEFAULT 0')
+            if 'current_action' not in columns:
+                cursor.execute('ALTER TABLE bot_states ADD COLUMN current_action TEXT DEFAULT \'\'')
+            if 'command_queue' not in columns:
+                cursor.execute('ALTER TABLE bot_states ADD COLUMN command_queue TEXT DEFAULT \'{}\'')
 
             conn.commit()
             # Don't close - connection is reused via thread-local pooling
@@ -602,6 +613,46 @@ class StateManager:
                 SET last_update = ?
                 WHERE device_name = ?
             ''', (datetime.now(), self.device_name))
+
+            conn.commit()
+
+    def update_current_action(self, action):
+        """Update current action/function being executed
+
+        Args:
+            action: String describing current action (e.g., "Recovery", "Group", "User input")
+        """
+        self.current_action = action
+        with self._db_lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                UPDATE bot_states
+                SET current_action = ?,
+                    last_update = ?
+                WHERE device_name = ?
+            ''', (action, datetime.now(), self.device_name))
+
+            conn.commit()
+
+    def update_command_queue(self, queue_info):
+        """Update command queue information in database
+
+        Args:
+            queue_info: Dict with queue information from bot.get_command_queue_info()
+                       {'queue_size': int, 'commands': [...]}
+        """
+        with self._db_lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                UPDATE bot_states
+                SET command_queue = ?,
+                    last_update = ?
+                WHERE device_name = ?
+            ''', (json.dumps(queue_info), datetime.now(), self.device_name))
 
             conn.commit()
 

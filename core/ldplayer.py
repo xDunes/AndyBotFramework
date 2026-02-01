@@ -131,6 +131,10 @@ class LDPlayer:
         Raises:
             ValueError: If neither index nor name provided
         """
+        # Check if instance is already running
+        if self.is_running(index=index, name=name):
+            return None  # Ignore request if already running
+
         args = ['launch']
         if index is not None:
             args.extend(['--index', str(index)])
@@ -859,9 +863,94 @@ class LDPlayer:
 
 # Convenience function for quick access
 def get_ldplayer() -> LDPlayer:
-    """Get LDPlayer instance configured from config.json
+    """Get LDPlayer instance configured from master.conf
 
     Returns:
         LDPlayer instance
     """
     return LDPlayer.from_config()
+
+
+def launch_devices_if_needed(
+    device_names: List[str],
+    master_config: Dict[str, Any],
+    stagger_delay: float = 5.0,
+    boot_wait: float = 45.0,
+    log_func=None
+) -> bool:
+    """Launch LDPlayer devices if they are not already running
+
+    Checks each device and launches any that aren't running, with staggered
+    starts to avoid overwhelming the system.
+
+    Args:
+        device_names: List of device names to check/launch
+        master_config: Master configuration dictionary containing device info
+        stagger_delay: Seconds to wait between launching each device (default: 5)
+        boot_wait: Seconds to wait after last launch for boot completion (default: 45)
+        log_func: Optional logging function (receives message string)
+
+    Returns:
+        True if any devices were launched (and we waited), False if all were running
+    """
+    import time
+
+    def log(msg):
+        if log_func:
+            log_func(msg)
+        else:
+            print(msg)
+
+    # Try to get LDPlayer instance
+    try:
+        ld = LDPlayer.from_config()
+    except (FileNotFoundError, KeyError) as e:
+        log(f"LDPlayer not configured: {e}")
+        return False
+
+    devices_config = master_config.get('devices', {})
+    devices_to_launch = []
+
+    # Check which devices need to be launched
+    for device_name in device_names:
+        device_info = devices_config.get(device_name, {})
+        index = device_info.get('index')
+
+        if index is None:
+            log(f"Device '{device_name}' has no LDPlayer index configured, skipping")
+            continue
+
+        try:
+            if ld.is_running(index=index):
+                log(f"Device '{device_name}' (index {index}) already running")
+            else:
+                devices_to_launch.append((device_name, index))
+        except Exception as e:
+            log(f"Error checking device '{device_name}': {e}")
+
+    if not devices_to_launch:
+        log("All devices already running")
+        return False
+
+    # Launch devices with stagger
+    log(f"Launching {len(devices_to_launch)} device(s)...")
+
+    for i, (device_name, index) in enumerate(devices_to_launch):
+        log(f"Launching '{device_name}' (index {index})...")
+        try:
+            ld.launch(index=index)
+        except Exception as e:
+            log(f"Failed to launch '{device_name}': {e}")
+            continue
+
+        # Stagger delay between launches (not after the last one)
+        if i < len(devices_to_launch) - 1:
+            log(f"Waiting {stagger_delay}s before next launch...")
+            time.sleep(stagger_delay)
+
+    # Wait for boot completion after last launch
+    log(f"Waiting {boot_wait}s for device(s) to boot...")
+    time.sleep(boot_wait)
+    log("Boot wait complete, proceeding with bot connection")
+
+    return True

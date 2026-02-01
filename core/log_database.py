@@ -44,11 +44,10 @@ class LogDatabase:
         # Initialize schema
         self._init_schema()
 
-        # Current session ID (only create if not read-only)
-        if read_only:
-            self.session_id = None
-        else:
-            self.session_id = self._create_session()
+        # Current session ID (lazy creation - only create when first entry is added)
+        # This prevents empty sessions when LogDatabase is opened but nothing is logged
+        self.session_id = None
+        self._session_created = read_only  # If read_only, mark as "created" to prevent creation
 
     def _init_schema(self):
         """Initialize database schema if not exists"""
@@ -115,6 +114,11 @@ class LogDatabase:
         Returns:
             int: Entry ID of inserted log
         """
+        # Lazy session creation - only create session when first entry is added
+        if not self._session_created:
+            self.session_id = self._create_session()
+            self._session_created = True
+
         cursor = self.conn.cursor()
 
         now = datetime.now()
@@ -208,6 +212,8 @@ class LogDatabase:
 
     def close_session(self):
         """Mark current session as ended"""
+        if self.session_id is None:
+            return  # No session was created (nothing was logged)
         cursor = self.conn.cursor()
         cursor.execute('''
             UPDATE sessions
@@ -222,6 +228,8 @@ class LogDatabase:
         This clears the current session's logs from the database.
         Use this to clear visible logs in the current bot run.
         """
+        if self.session_id is None:
+            return  # No session was created (nothing was logged)
         cursor = self.conn.cursor()
         cursor.execute('''
             DELETE FROM log_entries
@@ -305,8 +313,9 @@ class LogDatabase:
 
         self.conn.commit()
 
-        # Recreate the current session after clearing
-        self.session_id = self._create_session()
+        # Reset session state for lazy creation (session will be created when first entry is added)
+        self.session_id = None
+        self._session_created = self.read_only
 
     def close(self):
         """Close database connection"""
@@ -387,11 +396,15 @@ def clear_all_devices_logs():
 
     for device_name in devices:
         try:
-            # Open database for this device in read-only mode (we'll delete everything anyway)
-            db = LogDatabase(device_name, read_only=True)
+            # Open database directly without LogDatabase class to avoid session issues
+            project_root = os.path.dirname(os.path.dirname(__file__))
+            db_path = os.path.join(project_root, 'logs', device_name, 'logs.db')
 
-            # Clear all logs for this device
-            cursor = db.conn.cursor()
+            if not os.path.exists(db_path):
+                continue
+
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
 
             # Delete all log entries
             cursor.execute('DELETE FROM log_entries')
@@ -399,16 +412,13 @@ def clear_all_devices_logs():
             # Delete all sessions
             cursor.execute('DELETE FROM sessions')
 
-            db.conn.commit()
-
-            # Close database (no need to recreate session since we're just clearing)
-            db.close()
+            conn.commit()
+            conn.close()
 
             cleared_count += 1
 
         except Exception as e:
-            from .utils import log
-            log(f"[System] Error clearing logs for device {device_name}: {e}")
+            print(f"[System] Error clearing logs for device {device_name}: {e}")
             continue
 
     return cleared_count
