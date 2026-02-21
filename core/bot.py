@@ -52,6 +52,7 @@ class BOT:
     # Class-level shared needle cache - all BOT instances share the same images
     # Key: findimg_path, Value: dict of loaded needle images
     _shared_needles: dict = {}
+    _shared_needles_lock = threading.Lock()
 
     def __init__(self, android_device, findimg_path=None):
         """Initialize bot with Android device connection
@@ -93,13 +94,20 @@ class BOT:
     # ============================================================================
 
     def check_should_stop(self):
-        """Check if bot should stop execution and raise exception if needed
+        """Check if bot should stop execution and raise exception if needed.
+
+        Also drains any pending remote commands (tap/swipe from web interface)
+        when main loop command processing is enabled. This ensures web commands
+        execute within milliseconds even during long-running bot functions.
 
         Raises:
             BotStoppedException: If bot has been signaled to stop
         """
         if self.should_stop:
             raise BotStoppedException("Bot execution stopped by user")
+        # Drain any pending remote commands (tap/swipe from web)
+        if self._main_loop_processes_commands and not self._command_queue.empty():
+            self._drain_commands()
 
     def set_gui(self, gui_instance):
         """Set GUI instance for logging
@@ -249,6 +257,44 @@ class BOT:
                 # Unexpected error - continue processing
                 continue
 
+    def _drain_commands(self):
+        """Process all pending commands from the queue synchronously.
+
+        Called from check_should_stop() to ensure web commands (tap/swipe)
+        execute promptly even during long-running bot functions. Since
+        check_should_stop() is called at the start of every find_and_click(),
+        tap(), swipe(), and find_all() call, commands execute within milliseconds.
+        """
+        while not self._command_queue.empty():
+            try:
+                item = self._command_queue.get_nowait()
+
+                if item is None:
+                    # Sentinel value - put it back for the thread to handle
+                    self._command_queue.put(None)
+                    break
+
+                command_func, description = item
+
+                try:
+                    command_func()
+                    if description and self.gui:
+                        self.log(f"[CMD] {description}")
+                except BotStoppedException:
+                    raise
+                except Exception as e:
+                    if self.gui:
+                        self.log(f"[CMD] Error: {e}")
+
+                # Remove the completed command from timestamps list (FIFO)
+                if self._command_timestamps:
+                    self._command_timestamps.pop(0)
+
+                self._command_queue.task_done()
+
+            except queue.Empty:
+                break
+
     # ============================================================================
     # NEEDLE LOADING (Images to Find)
     # ============================================================================
@@ -279,33 +325,38 @@ class BOT:
         # Normalize path for consistent cache key
         cache_key = os.path.normpath(os.path.abspath(folder_path))
 
-        # Return from cache if already loaded
+        # Double-checked locking: quick check without lock first
         if cache_key in cls._shared_needles:
             return cls._shared_needles[cache_key]
 
-        # Load needles into shared cache
-        needles = {'findimg': {}}
+        with cls._shared_needles_lock:
+            # Re-check after acquiring lock (another thread may have loaded it)
+            if cache_key in cls._shared_needles:
+                return cls._shared_needles[cache_key]
 
-        if not os.path.exists(folder_path):
-            _log_framework(f'WARNING: findimg folder not found: {folder_path}')
+            # Load needles into shared cache
+            needles = {'findimg': {}}
+
+            if not os.path.exists(folder_path):
+                _log_framework(f'WARNING: findimg folder not found: {folder_path}')
+                cls._shared_needles[cache_key] = needles
+                return needles
+
+            _log_framework(f'Loading shared assets from {folder_path}')
+            files = os.listdir(folder_path)
+
+            for file in files:
+                if file.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                    filename_parts = file.split(".")
+                    needle_name = filename_parts[0]
+                    needle_path = os.path.join(folder_path, file)
+                    needles['findimg'][needle_name] = cv.imread(
+                        needle_path, cv.IMREAD_UNCHANGED
+                    )
+
+            _log_framework(f'Loaded {len(needles["findimg"])} needle images (shared)')
             cls._shared_needles[cache_key] = needles
             return needles
-
-        _log_framework(f'Loading shared assets from {folder_path}')
-        files = os.listdir(folder_path)
-
-        for file in files:
-            if file.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
-                filename_parts = file.split(".")
-                needle_name = filename_parts[0]
-                needle_path = os.path.join(folder_path, file)
-                needles['findimg'][needle_name] = cv.imread(
-                    needle_path, cv.IMREAD_UNCHANGED
-                )
-
-        _log_framework(f'Loaded {len(needles["findimg"])} needle images (shared)')
-        cls._shared_needles[cache_key] = needles
-        return needles
 
     def _load_all_needles(self):
         """Load all needle image sets from configured findimg path
@@ -749,31 +800,8 @@ class BOT:
         Example:
             sc = bot.screenshot()
             color = bot.get_pixel_color(sc, 100, 100)
-
-        Note:
-            Automatically updates state manager with screenshot periodically
-            for remote monitoring (every 20th screenshot to avoid overhead)
         """
-        sc = self.andy.capture_screen()
-
-        # Update state manager with screenshot periodically (every 20 screenshots)
-        # This allows remote monitoring without adding significant overhead
-        if self.gui and hasattr(self.gui, 'state_manager'):
-            if not hasattr(self, '_screenshot_update_counter'):
-                self._screenshot_update_counter = 0
-
-            self._screenshot_update_counter += 1
-
-            if self._screenshot_update_counter >= 20:  # Every 20th screenshot
-                self._screenshot_update_counter = 0
-                try:
-                    # Update in background to avoid blocking bot execution
-                    self.gui.state_manager.update_screenshot(sc)
-                except Exception:
-                    # Silently ignore errors to not break bot execution
-                    pass
-
-        return sc
+        return self.andy.capture_screen()
 
     # ============================================================================
     # TEXT INPUT & KEYBOARD

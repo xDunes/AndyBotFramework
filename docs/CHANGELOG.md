@@ -14,6 +14,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-02-21
+
+### Bug Fixes, Refactoring & Mobile UI
+
+#### Fixed
+- **Bug fixes in apex_girl functions** - Stability improvements to game automation functions
+- **Web UI bug fixes** - Fixed issues in `web/static/app.js` affecting bot control
+- **Mobile GUI** - Fixed mobile layout and interaction issues in web interface
+  - Improved mobile-specific CSS in `web/static/styles.css`
+  - Fixed mobile touch and display issues in `web/static/app.js`
+
+#### Changed
+- **Core refactoring** - Cleaned up and improved core modules
+  - `core/android.py` - Code cleanup and improvements
+  - `core/bot.py` - Refactored for clarity and maintainability
+  - `core/bot_loop.py` - Cleaned up execution loop
+- **Apex Girl improvements** - Refactored game-specific modules
+  - `games/apex_girl/functions.py` - Cleanup and improvements
+  - `games/apex_girl/commands.py` - Refactored command handlers
+- **master_of_bots.py** - Improvements to multi-bot management
+- **Web UI improvements** - Refactored frontend
+  - `web/static/app.js` - Cleaned up JavaScript
+  - `web/static/styles.css` - Stylesheet improvements and mobile fixes
+  - `web/static/index.html` - Minor HTML updates
+
+#### Documentation
+- Updated all documentation to use "AndyBotFramework" as project name
+  - README.md, NEWBOT.md, STATE_MONITORING_README.md, CHANGELOG.md
+- Updated "Finding Device Serial" section in README.md to recommend `listAvailableSerials.py`
+- Added `listAvailableSerials.py` to Utility Scripts section in README.md
+
+---
+
 ## [0.5.0] - 2026-02-01
 
 ### Architecture Cleanup - Direct In-Memory State
@@ -517,6 +550,7 @@ AndyBotFramework/
 
 ## Version History
 
+- **0.5.1** - 2026-02-21 - Bug fixes, core refactoring, mobile GUI fixes, documentation updates
 - **0.5.0** - 2026-02-01 - Architecture cleanup: direct in-memory state, removed standalone web server, integrated web UI in master_of_bots
 - **0.4.1** - 2025-12-16 - Auto-launch LDPlayer devices, condensed ADB logging, improved device detection
 - **0.4.0** - 2025-12-16 - Fixed ALL mode device selection bug, removed config.json dependency

@@ -16,9 +16,6 @@ import time
 # Import game functions for reuse
 from . import functions as game_functions
 
-# Import core utilities
-from core.utils import log
-
 
 # ============================================================================
 # COMMAND HANDLERS
@@ -31,7 +28,7 @@ def handle_min_fans(bot, _gui):
         bot: BOT instance for game interactions
         _gui: BotGUI instance (unused, required by command handler interface)
     """
-    log("Min Fans command triggered")
+    bot.log("Min Fans command triggered")
     game_functions.send_assist(bot, use_min_fans=True)
     time.sleep(2)
     bot.find_and_click("continuemarch")
@@ -44,7 +41,7 @@ def handle_max_fans(bot, _gui):
         bot: BOT instance for game interactions
         _gui: BotGUI instance (unused, required by command handler interface)
     """
-    log("Max Fans command triggered")
+    bot.log("Max Fans command triggered")
     game_functions.send_assist(bot, use_min_fans=False)
     time.sleep(2)
     bot.find_and_click("continuemarch")

@@ -55,7 +55,7 @@ class ADBTimeoutError(Exception):
 
 
 # Thread pool for running ADB operations with timeout
-_adb_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="adb_timeout")
+_adb_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="adb_timeout")
 
 
 def auto_reconnect(func):

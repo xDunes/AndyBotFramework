@@ -28,6 +28,19 @@ let selectedPreviews = new Set(); // Track selected preview devices
 
 // Screenshot timestamp tracking to prevent older images overwriting newer ones
 let currentScreenshotTimestamp = null; // Timestamp of currently displayed screenshot
+
+// Sync CSS --header-height with actual header size (mobile fixed header).
+// ResizeObserver fires automatically whenever the header grows or shrinks
+// (settings panel toggle, queue items wrapping, viewport rotation, etc.)
+function initHeaderHeightObserver() {
+    const header = document.querySelector('.header');
+    if (!header) return;
+    const sync = () => document.documentElement.style.setProperty(
+        '--header-height', header.offsetHeight + 'px'
+    );
+    new ResizeObserver(sync).observe(header);
+    sync(); // set initial value immediately
+}
 let previewScreenshotTimestamps = {}; // Map of device_name -> timestamp
 
 // Preview polling optimization - poll previews less frequently than main
@@ -82,8 +95,15 @@ async function init() {
     // Initialize WebSocket connection
     initializeWebSocket();
 
+    // Track header height for mobile fixed-header padding
+    initHeaderHeightObserver();
+
     // Load initial data (WebSocket will handle live updates)
     refreshData();
+
+    // Periodically refresh all bots data to keep tooltips and device list in sync
+    // This ensures UI reflects when functions disable themselves on the bot side
+    setInterval(() => refreshData(), 5000);
 }
 
 // Initialize WebSocket connection for live updates
@@ -1026,6 +1046,9 @@ async function refreshDeviceDetails(refreshPreviews = false) {
             updateLog(state.current_log);
         }
 
+        // Update unified queue display
+        updateQueueDisplay(state);
+
         // Update main screenshot (always at full rate)
         await updateScreenshot();
 
@@ -1175,6 +1198,28 @@ function updateFunctionTooltips() {
 }
 
 // Update log (full replacement from API)
+// Update unified queue display (functions, commands, user inputs)
+function updateQueueDisplay(state) {
+    const queueContainer = document.getElementById('unifiedQueueDisplay');
+    if (!queueContainer) return;
+
+    const queue = state.queue;
+    if (!queue || queue.length === 0) {
+        queueContainer.innerHTML = '<span class="queue-empty">Queue empty</span>';
+
+        return;
+    }
+
+    const items = queue.map(item => {
+        const typeClass = `queue-${item.type}`;
+        const typeLabel = item.type === 'function' ? 'FN' : item.type === 'command' ? 'CMD' : 'INPUT';
+        return `<span class="queue-item ${typeClass}">${typeLabel}: ${item.name}</span>`;
+    }).join('');
+
+    queueContainer.innerHTML = items;
+    updateHeaderHeight();
+}
+
 function updateLog(logText) {
     const logElement = document.getElementById('logText');
     const logContainer = document.getElementById('logContainer');
@@ -1430,38 +1475,36 @@ async function sendCheckboxCommand(checkboxName) {
     if (!selectedDevice) return;
 
     const enabled = document.getElementById(checkboxName).checked;
+    const applyMode = getApplyMode();
     const targetDevices = getTargetDevices();
 
     if (targetDevices.length === 0) return;
 
-    let successCount = 0;
-
-    // Execute sequentially to ensure all commands are processed reliably
-    for (const deviceName of targetDevices) {
-        try {
-            const response = await fetchWithTimeout('/api/command/checkbox', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    device_name: deviceName,
-                    apply_mode: 'current',
-                    name: checkboxName,
-                    enabled: enabled
-                })
-            }, 5000);
-            const result = await response.json();
-            if (result.success) successCount++;
-        } catch (err) {
-            console.error(`Checkbox command failed for ${deviceName}:`, err.message);
+    try {
+        const body = {
+            device_name: selectedDevice,
+            apply_mode: applyMode,
+            name: checkboxName,
+            enabled: enabled
+        };
+        // Include device list when in ALL mode with subset selection
+        if (applyMode === 'all') {
+            body.devices = targetDevices;
         }
-    }
 
-    console.log(`Checkbox command sent to ${successCount}/${targetDevices.length} devices: ${checkboxName} = ${enabled}`);
-
-    if (successCount < targetDevices.length) {
-        console.error('Some checkbox commands failed');
+        const response = await fetchWithTimeout('/api/command/checkbox', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }, 5000);
+        const result = await response.json();
+        if (result.success) {
+            console.log(`Checkbox command sent: ${checkboxName} = ${enabled} (${applyMode}, ${targetDevices.length} devices)`);
+        } else {
+            console.error('Checkbox command failed:', result.error);
+        }
+    } catch (err) {
+        console.error(`Checkbox command failed:`, err.message);
     }
 }
 
@@ -1526,38 +1569,35 @@ async function sendSetting(settingName) {
         }
     }
 
+    const applyMode = getApplyMode();
     const targetDevices = getTargetDevices();
 
     if (targetDevices.length === 0) return;
 
-    let successCount = 0;
-
-    // Execute sequentially to ensure all commands are processed reliably
-    for (const deviceName of targetDevices) {
-        try {
-            const response = await fetch('/api/command/setting', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    device_name: deviceName,
-                    apply_mode: 'current',
-                    name: settingName,
-                    value: value
-                })
-            });
-            const result = await response.json();
-            if (result.success) successCount++;
-        } catch (err) {
-            console.error(`Setting command failed for ${deviceName}:`, err.message);
+    try {
+        const body = {
+            device_name: selectedDevice,
+            apply_mode: applyMode,
+            name: settingName,
+            value: value
+        };
+        if (applyMode === 'all') {
+            body.devices = targetDevices;
         }
-    }
 
-    console.log(`Setting command sent to ${successCount}/${targetDevices.length} devices: ${settingName} = ${value}`);
-
-    if (successCount < targetDevices.length) {
-        console.error('Some setting commands failed');
+        const response = await fetch('/api/command/setting', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const result = await response.json();
+        if (result.success) {
+            console.log(`Setting command sent: ${settingName} = ${value} (${applyMode}, ${targetDevices.length} devices)`);
+        } else {
+            console.error('Setting command failed:', result.error);
+        }
+    } catch (err) {
+        console.error(`Setting command failed:`, err.message);
     }
 }
 
@@ -1565,38 +1605,35 @@ async function sendSetting(settingName) {
 async function sendTapCommand(x, y) {
     if (!selectedDevice) return;
 
+    const applyMode = getApplyMode();
     const targetDevices = getTargetDevices();
 
     if (targetDevices.length === 0) return;
 
-    let successCount = 0;
-
-    // Execute sequentially to ensure all commands are processed reliably
-    for (const deviceName of targetDevices) {
-        try {
-            const response = await fetchWithTimeout('/api/command/tap', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    device_name: deviceName,
-                    apply_mode: 'current',
-                    x: x,
-                    y: y
-                })
-            }, 5000);
-            const result = await response.json();
-            if (result.success) successCount++;
-        } catch (err) {
-            console.error(`Tap command failed for ${deviceName}:`, err.message);
+    try {
+        const body = {
+            device_name: selectedDevice,
+            apply_mode: applyMode,
+            x: x,
+            y: y
+        };
+        if (applyMode === 'all') {
+            body.devices = targetDevices;
         }
-    }
 
-    console.log(`Tap command sent to ${successCount}/${targetDevices.length} devices: (${x}, ${y})`);
-
-    if (successCount < targetDevices.length) {
-        console.error('Some tap commands failed');
+        const response = await fetchWithTimeout('/api/command/tap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }, 5000);
+        const result = await response.json();
+        if (result.success) {
+            console.log(`Tap command sent: (${x}, ${y}) (${applyMode}, ${targetDevices.length} devices)`);
+        } else {
+            console.error('Tap command failed:', result.error);
+        }
+    } catch (err) {
+        console.error(`Tap command failed:`, err.message);
     }
 }
 
@@ -1604,6 +1641,7 @@ async function sendTapCommand(x, y) {
 async function sendSwipeCommand(x1, y1, x2, y2, duration) {
     if (!selectedDevice) return;
 
+    const applyMode = getApplyMode();
     const targetDevices = getTargetDevices();
 
     if (targetDevices.length === 0) return;
@@ -1611,37 +1649,33 @@ async function sendSwipeCommand(x1, y1, x2, y2, duration) {
     // Ensure duration is at least 100ms for reliable swipes
     const swipeDuration = Math.max(100, duration || 500);
 
-    let successCount = 0;
-
-    // Execute sequentially to ensure all commands are processed reliably
-    for (const deviceName of targetDevices) {
-        try {
-            const response = await fetchWithTimeout('/api/command/swipe', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    device_name: deviceName,
-                    apply_mode: 'current',
-                    x1: x1,
-                    y1: y1,
-                    x2: x2,
-                    y2: y2,
-                    duration: swipeDuration
-                })
-            }, 5000);
-            const result = await response.json();
-            if (result.success) successCount++;
-        } catch (err) {
-            console.error(`Swipe command failed for ${deviceName}:`, err.message);
+    try {
+        const body = {
+            device_name: selectedDevice,
+            apply_mode: applyMode,
+            x1: x1,
+            y1: y1,
+            x2: x2,
+            y2: y2,
+            duration: swipeDuration
+        };
+        if (applyMode === 'all') {
+            body.devices = targetDevices;
         }
-    }
 
-    console.log(`Swipe command sent to ${successCount}/${targetDevices.length} devices: (${x1}, ${y1}) -> (${x2}, ${y2}), duration: ${swipeDuration}ms`);
-
-    if (successCount < targetDevices.length) {
-        console.error('Some swipe commands failed');
+        const response = await fetchWithTimeout('/api/command/swipe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }, 5000);
+        const result = await response.json();
+        if (result.success) {
+            console.log(`Swipe command sent: (${x1},${y1})->(${x2},${y2}) (${applyMode}, ${targetDevices.length} devices)`);
+        } else {
+            console.error('Swipe command failed:', result.error);
+        }
+    } catch (err) {
+        console.error(`Swipe command failed:`, err.message);
     }
 }
 
@@ -1730,37 +1764,34 @@ async function sendScreenshotCommand() {
 async function sendCommand(commandName) {
     if (!selectedDevice) return;
 
+    const applyMode = getApplyMode();
     const targetDevices = getTargetDevices();
 
     if (targetDevices.length === 0) return;
 
-    let successCount = 0;
-
-    // Execute sequentially to ensure all commands are processed reliably
-    for (const deviceName of targetDevices) {
-        try {
-            const response = await fetch('/api/command/trigger', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    device_name: deviceName,
-                    apply_mode: 'current',
-                    command: commandName
-                })
-            });
-            const result = await response.json();
-            if (result.success) successCount++;
-        } catch (err) {
-            console.error(`Command ${commandName} failed for ${deviceName}:`, err.message);
+    try {
+        const body = {
+            device_name: selectedDevice,
+            apply_mode: applyMode,
+            command: commandName
+        };
+        if (applyMode === 'all') {
+            body.devices = targetDevices;
         }
-    }
 
-    console.log(`Command sent to ${successCount}/${targetDevices.length} devices: ${commandName}`);
-
-    if (successCount < targetDevices.length) {
-        console.error('Some commands failed');
+        const response = await fetch('/api/command/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const result = await response.json();
+        if (result.success) {
+            console.log(`Command sent: ${commandName} (${applyMode}, ${targetDevices.length} devices)`);
+        } else {
+            console.error('Command failed:', result.error);
+        }
+    } catch (err) {
+        console.error(`Command ${commandName} failed:`, err.message);
     }
 
     // Refresh device state after a short delay to allow bot to process command
@@ -2222,6 +2253,7 @@ selectDevice = function(deviceName) {
 // =============================================================================
 
 let detailsUpdateInterval = null;
+let controlPanelUpdateInterval = null;
 let currentQueueData = null;
 
 // Update device details in header
@@ -2284,18 +2316,14 @@ async function updateDeviceDetails() {
             }
 
             if (queuePreview) {
-                // Show top 3 oldest commands in preview
+                // Show top 3 oldest user input commands in preview
                 if (commands.length > 0) {
-                    const preview = commands.slice(0, 3).map((cmd, i) => {
+                    queuePreview.innerHTML = commands.slice(0, 3).map((cmd, i) => {
                         const delay = Math.floor(cmd.delay_seconds);
-                        return `${i + 1}. ${cmd.description} (${delay}s)`;
-                    }).join('<br>');
-
-                    queuePreview.innerHTML = preview.split('<br>').map(line =>
-                        `<div class="queue-preview-item">${line}</div>`
-                    ).join('');
+                        return `<div class="queue-preview-item">${i + 1}. ${cmd.description} (${delay}s)</div>`;
+                    }).join('');
                 } else {
-                    queuePreview.innerHTML = '<div class="queue-preview-item">No commands queued</div>';
+                    queuePreview.innerHTML = '<div class="queue-preview-item">No input commands queued</div>';
                 }
             }
         }
@@ -2344,6 +2372,14 @@ function startDetailsUpdates() {
     }
     updateDeviceDetails();
     detailsUpdateInterval = setInterval(updateDeviceDetails, 1000);
+
+    // Also start periodic refresh of control panel state (checkboxes, settings)
+    // This ensures UI stays in sync when functions disable themselves
+    if (controlPanelUpdateInterval) {
+        clearInterval(controlPanelUpdateInterval);
+    }
+    refreshDeviceDetails();
+    controlPanelUpdateInterval = setInterval(() => refreshDeviceDetails(false), 2000);
 }
 
 // Stop auto-updating device details
@@ -2351,6 +2387,10 @@ function stopDetailsUpdates() {
     if (detailsUpdateInterval) {
         clearInterval(detailsUpdateInterval);
         detailsUpdateInterval = null;
+    }
+    if (controlPanelUpdateInterval) {
+        clearInterval(controlPanelUpdateInterval);
+        controlPanelUpdateInterval = null;
     }
 }
 

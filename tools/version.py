@@ -3,11 +3,11 @@ Version information for Apex-Girl Bot Framework
 Auto-managed by version_manager.py
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 __version_info__ = {
     'major': 0,
     'minor': 5,
-    'build': 0
+    'build': 1
 }
 
 def get_version():

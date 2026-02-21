@@ -20,12 +20,11 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
     and processes remote commands.
 
     Loop behavior:
-    1. Check and execute any pending command triggers (highest priority)
-    2. Execute all enabled functions in sequence
+    1. Execute all enabled functions in sequence
+    2. Check and execute any pending command triggers
     3. Run Fix/Recover function if enabled
-    4. Update state manager heartbeat
-    5. Sleep for configured duration
-    6. Repeat
+    4. Sleep for configured duration
+    5. Repeat
 
     Args:
         gui: BotGUI instance containing configuration and state
@@ -59,13 +58,6 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
         andy = Android(get_serial(device), device_name=device)
         andy.set_gui(gui)
 
-        # Mark as running in state manager (if available)
-        try:
-            if hasattr(gui, 'state_manager') and gui.state_manager:
-                gui.state_manager.mark_running()
-        except Exception as e:
-            gui.log(f"[System] Error marking bot as running: {e}")
-
         gui.root.after(0, gui._on_settings_change)
 
     except AndroidStoppedException:
@@ -97,17 +89,13 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
     # Main loop
     while gui.is_running:
         try:
-            # Check for command triggers (run immediately, highest priority)
-            if command_handlers:
-                _handle_commands(gui, bot, command_handlers)
-
             # Get sleep time from GUI settings
             sleep_time = _get_sleep_time(gui)
 
             # Track if any function executed this iteration
             any_function_executed = False
 
-            # Execute enabled functions
+            # Priority 1: Execute enabled functions
             for func_name, func in function_map.items():
                 # Check if Control key is held down before each function
                 if has_keyboard and keyboard.is_pressed('ctrl'):
@@ -134,12 +122,6 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
                         continue
 
                 gui.update_status("Running", func_name)
-                # Update current action in state manager (if available)
-                try:
-                    if hasattr(gui, 'state_manager') and gui.state_manager:
-                        gui.state_manager.update_current_action(func_name)
-                except Exception:
-                    pass
 
                 try:
                     # Call function
@@ -176,29 +158,18 @@ def run_bot_loop(gui, function_map, config, command_handlers=None, fix_recover_f
                 except Exception:
                     pass  # Ignore screenshot errors when idle
 
-            # Run Fix/Recover if enabled
+            # Priority 2: Check for command triggers
+            if command_handlers:
+                _handle_commands(gui, bot, command_handlers)
+
+            # Priority 3: Run Fix/Recover if enabled
             if has_keyboard and keyboard.is_pressed('ctrl'):
                 gui.update_status("Running", "CTRL held - skipping Fix")
             elif hasattr(gui, 'fix_enabled') and gui.fix_enabled.get():
-                # Update current action for Fix/Recover (if state manager available)
-                try:
-                    if hasattr(gui, 'state_manager') and gui.state_manager:
-                        gui.state_manager.update_current_action("Fix/Recovery")
-                except Exception:
-                    pass
                 _run_fix_recover(gui, bot, device, fix_recover_func)
-
-            # Update heartbeat
-            _update_heartbeat(gui, bot)
 
             # Sleep if configured
             if sleep_time > 0:
-                # Update current action to idle/sleeping (if state manager available)
-                try:
-                    if hasattr(gui, 'state_manager') and gui.state_manager:
-                        gui.state_manager.update_current_action("Idle")
-                except Exception:
-                    pass
                 if has_keyboard and keyboard.is_pressed('ctrl'):
                     gui.update_status("Running", "CTRL held - override active")
                 else:
@@ -240,9 +211,6 @@ def _cleanup_on_stop(gui):
     gui.root.after(0, lambda: gui.toggle_button.config(text="Start"))
     gui.root.after(0, gui._update_status_label)
     try:
-        if hasattr(gui, 'state_manager') and gui.state_manager:
-            gui.state_manager.update_current_action("")  # Clear current action
-            gui.state_manager.mark_stopped()
         gui.root.after(0, gui._update_full_state)
     except Exception as e:
         gui.log(f"[System] Error updating state on stop: {e}")
@@ -255,12 +223,6 @@ def _handle_commands(gui, bot, command_handlers):
         if hasattr(gui, 'command_triggers') and gui.command_triggers.get(trigger_key):
             gui.command_triggers[trigger_key] = False
             gui.update_status("Running", f"{command_id} (command)")
-            # Update current action for user command (if state manager available)
-            try:
-                if hasattr(gui, 'state_manager') and gui.state_manager:
-                    gui.state_manager.update_current_action(f"User command: {command_id}")
-            except Exception:
-                pass
             try:
                 handler(bot, gui)
             except BotStoppedException:
@@ -340,29 +302,3 @@ def _run_fix_recover(gui, bot, device, fix_recover_func):
         raise
     except Exception as e:
         gui.log(f"ERROR in Fix/Recover: {e}")
-
-
-def _update_heartbeat(gui, bot):
-    """Update state manager heartbeat and screenshot (if state manager available)"""
-    try:
-        if hasattr(gui, 'state_manager') and gui.state_manager:
-            gui.state_manager.heartbeat()
-    except Exception as e:
-        gui.log(f"[System] Error updating heartbeat: {e}")
-
-    # Update command queue info (if state manager available)
-    try:
-        if hasattr(gui, 'state_manager') and gui.state_manager and hasattr(bot, 'get_command_queue_info'):
-            queue_info = bot.get_command_queue_info()
-            gui.state_manager.update_command_queue(queue_info)
-    except Exception as e:
-        gui.log(f"[System] Error updating command queue: {e}")
-
-    try:
-        screenshot = bot.screenshot()
-        if hasattr(gui, 'state_manager') and gui.state_manager:
-            gui.state_manager.update_screenshot(screenshot)
-    except AndroidStoppedException:
-        raise
-    except Exception as e:
-        gui.log(f"[System] Error updating screenshot: {e}")

@@ -231,6 +231,32 @@ class HeadlessBot:
             # Add recent logs
             state['current_log'] = '\n'.join(self.log_buffer[-10:]) if self.log_buffer else ''
 
+            # Build unified queue display
+            queue_items = []
+
+            # 1. Enabled functions (in config order)
+            for row in self.config.get('function_layout', []):
+                for func_name in row:
+                    var = self.function_states.get(func_name)
+                    if var and var.get():
+                        queue_items.append({'type': 'function', 'name': func_name})
+
+            # 2. Pending command triggers
+            for cmd_id, triggered in self.command_triggers.items():
+                if triggered:
+                    queue_items.append({'type': 'command', 'name': cmd_id})
+
+            # 3. Pending user inputs (from command queue)
+            if self.bot:
+                try:
+                    queue_info = self.bot.get_command_queue_info()
+                    for cmd in queue_info.get('commands', []):
+                        queue_items.append({'type': 'input', 'name': cmd.get('description', 'unknown')})
+                except Exception:
+                    pass
+
+            state['queue'] = queue_items
+
             # Calculate uptime if running
             if self.start_time and self.is_running:
                 try:
@@ -270,22 +296,12 @@ class HeadlessBot:
             self.is_running = True
             self.start_time = datetime.now().isoformat()
             self.end_time = None
-            if self.state_manager:
-                try:
-                    self.state_manager.mark_running()
-                except Exception:
-                    pass
 
     def mark_stopped(self):
         """Mark bot as stopped and record end time"""
         with self._lock:
             self.is_running = False
             self.end_time = datetime.now().isoformat()
-            if self.state_manager:
-                try:
-                    self.state_manager.mark_stopped()
-                except Exception:
-                    pass
 
     def log(self, message: str, screenshot=None, console: bool = False):
         """Add log message
@@ -339,11 +355,6 @@ class HeadlessBot:
         """Update current action"""
         with self._lock:
             self.current_action = action
-        if self.state_manager:
-            try:
-                self.state_manager.update_current_action(action)
-            except Exception:
-                pass
 
     def _update_full_state(self):
         """Update full state (no-op in headless mode - no state_manager)"""
@@ -357,7 +368,6 @@ class HeadlessBot:
         self._screenshot_running = True
 
         def capture_loop():
-            loop_count = 0
             while self._screenshot_running and self.is_running:
                 try:
                     if self.andy is not None:
@@ -373,15 +383,6 @@ class HeadlessBot:
                                 self.latest_screenshot = screenshot
                                 self.screenshot_timestamp = time.time()
 
-                    # Update command queue info every ~3 seconds (every 10 iterations) - optional
-                    loop_count += 1
-                    if loop_count >= 10 and self.state_manager and self.bot and hasattr(self.bot, 'get_command_queue_info'):
-                        try:
-                            queue_info = self.bot.get_command_queue_info()
-                            self.state_manager.update_command_queue(queue_info)
-                        except Exception:
-                            pass
-                        loop_count = 0
                 except Exception:
                     pass
                 time.sleep(0.3)  # ~3 FPS capture rate
@@ -635,24 +636,18 @@ class MasterBotManager:
             function_cooldowns = self.config.get('cooldowns', {})
             bot.last_run_times = {func_name: 0.0 for func_name in self.function_map.keys()}
 
-            # Main loop
+            # Main loop - Execution priority:
+            # 1. Enabled functions (in config order, respecting cooldowns)
+            # 2. Queued command triggers (Min Fans, Max Fans, etc.)
+            # 3. User inputs (tap/swipe from web) - also drained during functions via check_should_stop()
+            # 4. Fix/Recover
+            # 5. Sleep
             while bot.is_running and not self._shutdown:
                 try:
-                    # Process any pending commands immediately at loop start
-                    self._process_pending_commands(botobj)
-
-                    # Handle command triggers
-                    if self.command_handlers:
-                        self._handle_commands(bot, botobj)
-
-                    # Execute enabled functions
-
+                    # Priority 1: Execute enabled functions
                     for func_name, func in self.function_map.items():
                         if not bot.is_running:
                             break
-
-                        # Process commands between each function for faster response
-                        self._process_pending_commands(botobj)
 
                         # Check if enabled
                         func_var = bot.function_states.get(func_name)
@@ -668,7 +663,6 @@ class MasterBotManager:
                                 continue
 
                         bot.update_status("Running", func_name)
-                        # Update current action
                         bot.update_action(func_name)
 
                         try:
@@ -691,10 +685,16 @@ class MasterBotManager:
                             bot.log(f"ERROR in {func_name}: {e}")
                             time.sleep(1)
 
-                    # Run fix/recover if enabled
+                    # Priority 2: Execute queued command triggers
+                    if self.command_handlers:
+                        self._handle_commands(bot, botobj)
+
+                    # Priority 3: Process user inputs (tap/swipe from web)
+                    # Note: also drained during long functions via check_should_stop()/_drain_commands()
+                    self._process_pending_commands(botobj)
+
+                    # Priority 4: Run fix/recover if enabled
                     if bot.fix_enabled.get() and self.do_recover_func:
-                        # Process commands before recovery (recovery can be slow)
-                        self._process_pending_commands(botobj)
                         try:
                             bot.update_status("Running", "Fix/Recover")
                             self.do_recover_func(botobj, device_name)
@@ -703,20 +703,14 @@ class MasterBotManager:
                         except Exception as e:
                             bot.log(f"ERROR in Fix/Recover: {e}")
 
-                    # Process any queued commands from web interface
-                    # This ensures commands execute at a safe point between bot functions
-                    self._process_pending_commands(botobj)
-
-                    # Sleep (interruptible for faster shutdown)
+                    # Priority 5: Sleep (interruptible for faster shutdown)
                     sleep_val = bot.sleep_time.get() or 0
                     if sleep_val > 0:
-                        # Update current action to idle/sleeping
                         bot.update_action("Idle")
                         bot.update_status("Running", f"Sleeping {sleep_val}s")
-                        # Use small increments to check for stop signal
                         sleep_end = time.time() + sleep_val
                         while time.time() < sleep_end and bot.is_running and not self._shutdown:
-                            # Process commands during sleep periods too
+                            # Process user inputs during sleep as safety net
                             self._process_pending_commands(botobj)
                             time.sleep(0.1)
 
@@ -804,13 +798,6 @@ class MasterBotManager:
                     break
 
                 command_func, description = item
-
-                # Update current action for remote command
-                if botobj.gui and hasattr(botobj.gui, 'state_manager'):
-                    try:
-                        botobj.gui.state_manager.update_current_action(f"Remote: {description}" if description else "Remote command")
-                    except Exception:
-                        pass
 
                 try:
                     command_func()
@@ -1037,15 +1024,6 @@ def create_web_server(manager: MasterBotManager, config: dict):
                             log_master(f"[LDStatus] Initial status retrieved: {len(status)} instances")
                             first_run = False
 
-                        # Update StateManager database with LD status for each bot (if state_manager available)
-                        try:
-                            for device_name, bot in manager.bots.items():
-                                if bot.ld_index is not None and bot.state_manager:
-                                    is_running = status.get(bot.ld_index, False)
-                                    bot.state_manager.update_ld_running(is_running)
-                        except Exception as sm_err:
-                            pass  # Don't let StateManager errors break the status thread
-
                     except subprocess.TimeoutExpired:
                         if first_run:
                             log_master("[LDStatus] Timeout on first status check, will retry")
@@ -1174,30 +1152,31 @@ def create_web_server(manager: MasterBotManager, config: dict):
                 return jsonify({'success': False, 'error': 'Screenshot not ready'}), 404
 
         try:
-            # Convert color space to RGB (JPEG doesn't support alpha)
-            if len(screenshot.shape) == 3:
-                if screenshot.shape[2] == 4:
-                    screenshot = cv.cvtColor(screenshot, cv.COLOR_BGRA2RGB)
-                elif screenshot.shape[2] == 3:
-                    screenshot = cv.cvtColor(screenshot, cv.COLOR_BGR2RGB)
-
+            original_height, original_width = screenshot.shape[:2]
             size = request.args.get('size', 'full')
-            img = Image.fromarray(screenshot)
-            original_width, original_height = img.size
 
             if size == 'preview':
+                # Preview: use PIL for high-quality downscale
+                if len(screenshot.shape) == 3:
+                    if screenshot.shape[2] == 4:
+                        screenshot = cv.cvtColor(screenshot, cv.COLOR_BGRA2RGB)
+                    elif screenshot.shape[2] == 3:
+                        screenshot = cv.cvtColor(screenshot, cv.COLOR_BGR2RGB)
+                img = Image.fromarray(screenshot)
                 img = img.resize((85, 150), Image.Resampling.LANCZOS)
                 buffer = io.BytesIO()
                 img.save(buffer, format='JPEG', quality=60, optimize=True)
-                buffer.seek(0)
                 base64_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
                 mime_type = 'image/jpeg'
             else:
-                buffer = io.BytesIO()
-                img.save(buffer, format='PNG')
-                buffer.seek(0)
-                base64_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                mime_type = 'image/png'
+                # Full size: use OpenCV JPEG encoding directly (much faster than PIL PNG)
+                if len(screenshot.shape) == 3 and screenshot.shape[2] == 4:
+                    screenshot = cv.cvtColor(screenshot, cv.COLOR_BGRA2BGR)
+                success, buffer = cv.imencode('.jpg', screenshot, [cv.IMWRITE_JPEG_QUALITY, 90])
+                if not success:
+                    return jsonify({'success': False, 'error': 'Failed to encode screenshot'}), 500
+                base64_data = base64.b64encode(buffer.tobytes()).decode('utf-8')
+                mime_type = 'image/jpeg'
 
             return jsonify({
                 'success': True,
@@ -1262,8 +1241,11 @@ def create_web_server(manager: MasterBotManager, config: dict):
                 return jsonify({'success': False, 'error': 'Missing required fields'}), 400
 
             if apply_mode == 'all':
-                # Snapshot bot list to avoid iteration issues
-                bots = list(manager.bots.values())
+                device_list = data.get('devices')
+                if device_list:
+                    bots = [b for d in device_list if (b := manager.get_bot(d)) is not None]
+                else:
+                    bots = list(manager.bots.values())
                 for bot in bots:
                     bot.set_checkbox(checkbox_name, enabled)
             else:
@@ -1303,8 +1285,11 @@ def create_web_server(manager: MasterBotManager, config: dict):
                     bot.fix_enabled.set(bool(value))
 
             if apply_mode == 'all':
-                # Snapshot bot list to avoid iteration issues
-                bots = list(manager.bots.values())
+                device_list = data.get('devices')
+                if device_list:
+                    bots = [b for d in device_list if (b := manager.get_bot(d)) is not None]
+                else:
+                    bots = list(manager.bots.values())
                 for bot in bots:
                     apply_setting(bot)
             else:
@@ -1334,8 +1319,11 @@ def create_web_server(manager: MasterBotManager, config: dict):
 
             # Queue taps for serialized execution per device
             if apply_mode == 'all':
-                # Snapshot bot list to avoid iteration issues
-                bots = list(manager.bots.values())
+                device_list = data.get('devices')
+                if device_list:
+                    bots = [b for d in device_list if (b := manager.get_bot(d)) is not None]
+                else:
+                    bots = list(manager.bots.values())
                 for bot in bots:
                     if bot.is_running and bot.bot:
                         tap_x, tap_y = int(x), int(y)
@@ -1381,8 +1369,11 @@ def create_web_server(manager: MasterBotManager, config: dict):
 
             # Queue swipes for serialized execution per device
             if apply_mode == 'all':
-                # Snapshot bot list to avoid iteration issues
-                bots = list(manager.bots.values())
+                device_list = data.get('devices')
+                if device_list:
+                    bots = [b for d in device_list if (b := manager.get_bot(d)) is not None]
+                else:
+                    bots = list(manager.bots.values())
                 for bot in bots:
                     if bot.is_running and bot.bot:
                         sx1, sy1, sx2, sy2, sdur = int(x1), int(y1), int(x2), int(y2), int(duration)
@@ -1474,8 +1465,11 @@ def create_web_server(manager: MasterBotManager, config: dict):
                         bot.command_triggers[command] = True
 
                 if apply_mode == 'all':
-                    # Snapshot bot list to avoid iteration issues
-                    bots = list(manager.bots.values())
+                    device_list = data.get('devices')
+                    if device_list:
+                        bots = [b for d in device_list if (b := manager.get_bot(d)) is not None]
+                    else:
+                        bots = list(manager.bots.values())
                     for bot in bots:
                         trigger(bot)
                 else:
